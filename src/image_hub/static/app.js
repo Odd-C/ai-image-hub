@@ -2,6 +2,7 @@ const models = window.IMAGE_HUB_MODELS || [];
 const $ = (selector) => document.querySelector(selector);
 const labels = {libtv: 'LibTV', lovart: 'Lovart', api: 'API', queued: '排队中', running: '生成中', succeeded: '已完成', failed: '失败', recovery_required: '需人工恢复'};
 const sentimentLabels = {satisfied: '满意', adopted: '采用', dissatisfied: '不满意'};
+const projectId = window.IMAGE_HUB_PROJECT_ID || '';
 let historyItems = [];
 let refreshTimer = null;
 let selectedReferenceFiles = [];
@@ -170,7 +171,7 @@ function handleLightboxAction(action) {
 async function loadHistory() {
   const query = new URLSearchParams({q: $('#search-input')?.value || '', provider: $('#filter-provider')?.value || '', sentiment: $('#filter-sentiment')?.value || ''});
   try {
-    const data = await responseJson(await fetch(`/api/generations?${query}`));
+    const data = await responseJson(await fetch(`/api/projects/${projectId}/generations?${query}`));
     historyItems = data.items;
     $('#recent-list').innerHTML = data.items.length ? data.items.slice(0, 4).map(item => resultCard(item, true)).join('') : '<div class="empty-state">还没有生成任务</div>';
     $('#history-grid').innerHTML = data.items.length ? data.items.map(item => resultCard(item)).join('') : '<div class="empty-state">没有符合条件的历史记录</div>';
@@ -203,10 +204,10 @@ async function handleAction(event) {
   try {
     target.disabled = true;
     if (target.dataset.action === 'sentiment') {
-      await responseJson(await fetch(`/api/generations/${target.dataset.id}/sentiment`, {method: 'POST', headers: {'Content-Type': 'application/json', ...csrfHeaders}, body: JSON.stringify({sentiment: target.dataset.value})}));
+      await responseJson(await fetch(`/api/projects/${projectId}/generations/${target.dataset.id}/sentiment`, {method: 'POST', headers: {'Content-Type': 'application/json', ...csrfHeaders}, body: JSON.stringify({sentiment: target.dataset.value})}));
       toast(`已标记为${sentimentLabels[target.dataset.value]}`);
     } else if (target.dataset.action === 'retry') {
-      await responseJson(await fetch(`/api/generations/${target.dataset.id}/retry`, {method: 'POST', headers: csrfHeaders}));
+      await responseJson(await fetch(`/api/projects/${projectId}/generations/${target.dataset.id}/retry`, {method: 'POST', headers: csrfHeaders}));
       toast('任务已重新排队');
     }
     await loadHistory();
@@ -224,7 +225,43 @@ function debounce(fn, wait = 300) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); };
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+async function loadProjectDraft() {
+  if (!projectId) return;
+  try {
+    const payload = await responseJson(await fetch(`/api/projects/${projectId}/canvas`));
+    const draft = payload.state?.draft;
+    if (!draft) return;
+    $('#prompt').value = draft.prompt || '';
+    $('#prompt-count').textContent = $('#prompt').value.length;
+    if (draft.provider) $('#provider-select').value = draft.provider;
+    renderModelOptions(draft.profile);
+    if (draft.profile) $('#profile-select').value = draft.profile;
+    renderCapabilities();
+    if ([...$('#ratio-select').options].some(item => item.value === draft.ratio)) $('#ratio-select').value = draft.ratio;
+    if ([...$('#resolution-select').options].some(item => item.value === draft.resolution)) $('#resolution-select').value = draft.resolution;
+    if ([...$('#quality-select').options].some(item => item.value === draft.quality)) $('#quality-select').value = draft.quality;
+  } catch (error) { toast(error.message, true); }
+}
+
+const saveProjectDraft = debounce(async () => {
+  if (!projectId) return;
+  const draft = {
+    prompt: $('#prompt').value,
+    provider: $('#provider-select').value,
+    profile: $('#profile-select').value,
+    ratio: $('#ratio-select').value,
+    resolution: $('#resolution-select').value,
+    quality: $('#quality-select').value,
+  };
+  try {
+    await responseJson(await fetch(`/api/projects/${projectId}/canvas`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json', ...csrfHeaders},
+      body: JSON.stringify({draft}),
+    }));
+  } catch (error) { console.warn('项目草稿自动保存失败', error); }
+}, 500);
+
+document.addEventListener('DOMContentLoaded', async () => {
   initModelControls();
   newIdempotencyKey();
   $('#provider-select').addEventListener('change', () => renderModelOptions());
@@ -281,6 +318,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.querySelectorAll('.nav-tab').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
   document.body.addEventListener('click', handleAction);
+  $('#generation-form').addEventListener('input', saveProjectDraft);
+  $('#generation-form').addEventListener('change', saveProjectDraft);
   $('#refresh-button').addEventListener('click', loadHistory);
   ['#search-input', '#filter-provider', '#filter-sentiment'].forEach(selector => $(selector).addEventListener(selector === '#search-input' ? 'input' : 'change', debounce(loadHistory)));
   $('#generation-form').addEventListener('submit', async event => {
@@ -289,7 +328,7 @@ document.addEventListener('DOMContentLoaded', () => {
     button.disabled = true;
     button.textContent = '正在提交…';
     try {
-      const result = await responseJson(await fetch('/api/generations', {method: 'POST', headers: csrfHeaders, body: new FormData(event.target)}));
+      const result = await responseJson(await fetch(`/api/projects/${projectId}/generations`, {method: 'POST', headers: csrfHeaders, body: new FormData(event.target)}));
       toast(`任务 ${result.id.slice(0, 8)} 已进入队列`);
       event.target.reset();
       selectedReferenceFiles = [];
@@ -303,5 +342,6 @@ document.addEventListener('DOMContentLoaded', () => {
     button.innerHTML = '开始生成 <span>→</span>';
     renderCapabilities();
   });
+  await loadProjectDraft();
   loadHistory();
 });

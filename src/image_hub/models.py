@@ -27,15 +27,41 @@ class User(Base):
     is_active: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    projects: Mapped[list["Project"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", order_by="Project.updated_at.desc()"
+    )
     generations: Mapped[list["Generation"]] = relationship(back_populates="user")
+
+
+class Project(Base):
+    __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("user_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+    canvas_state_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, index=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped[User] = relationship(back_populates="projects")
+    generations: Mapped[list["Generation"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan",
+        order_by="Generation.created_at.desc()",
+    )
 
 
 class Generation(Base):
     __tablename__ = "generations"
-    __table_args__ = (UniqueConstraint("user_id", "idempotency_key"),)
+    __table_args__ = (UniqueConstraint("project_id", "idempotency_key"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(64), index=True)
     original_prompt: Mapped[str] = mapped_column(Text)
     provider: Mapped[str] = mapped_column(String(40), index=True)
@@ -59,6 +85,7 @@ class Generation(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(back_populates="generations")
+    project: Mapped[Project] = relationship(back_populates="generations")
     references: Mapped[list["ReferenceImage"]] = relationship(
         back_populates="generation", cascade="all, delete-orphan", order_by="ReferenceImage.position"
     )

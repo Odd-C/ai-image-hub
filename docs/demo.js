@@ -33,6 +33,27 @@ let nodes = [
   {id:'note-1',type:'note',title:'创作备注',text:'保留瓶身比例和透明材质，背景可以继续尝试更冷的灰色。',x:1260,y:840,w:250}
 ];
 
+let projects = [
+  {id:'p1',name:'香氛视觉探索',updated:'刚刚',art:0},
+  {id:'p2',name:'咖啡包装升级',updated:'昨天',art:2},
+  {id:'p3',name:'耳机秋季 Campaign',updated:'周五',art:3}
+];
+let activeProjectId = 'p1';
+let demoRole = 'user';
+const clone = value => JSON.parse(JSON.stringify(value));
+const projectStates = {
+  p1:{nodes:clone(nodes),tasks:clone(tasks),view:{x:-350,y:-310,scale:.82},references:['ref-1','ref-2']},
+  p2:{
+    nodes:[
+      {id:'coffee-ref',type:'reference',title:'旧版包装参考',x:560,y:520,w:260,ratio:1,art:2},
+      {id:'coffee-result',type:'result',title:'Seedream · 包装升级',x:980,y:510,w:320,ratio:1,taskId:'coffee-task',art:5,parents:['coffee-ref']}
+    ],
+    tasks:[{id:'coffee-task',prompt:'复古咖啡包装升级，保留红色品牌识别，增加现代烘焙质感和货架冲击力',provider:'api',model:'Seedream 5.0 Pro',status:'succeeded',sentiment:'satisfied',art:5,time:'昨天',ratio:'1:1',resolution:'2K',referenceOrder:['coffee-ref']}],
+    view:{x:-420,y:-330,scale:.78},references:['coffee-ref']
+  },
+  p3:{nodes:[],tasks:[],view:{x:120,y:80,scale:1},references:[]}
+};
+
 let selectedIds = new Set();
 let referenceOrder = ['ref-1','ref-2'];
 let referencePickMode = false;
@@ -63,11 +84,43 @@ function inspectResult(node){const task=taskForNode(node);if(!task||task.status!
 function exitInspection(){if(!inspectedNodeId)return;inspectedNodeId=null;selectedIds.clear();applyFormSnapshot(draftSnapshot);draftSnapshot=null;setDockMode(false);renderCanvas()}
 function toggleReference(id){const node=nodes.find(item=>item.id===id);if(!node||node.type==='note'||taskForNode(node)?.status==='running')return;if(referenceOrder.includes(id))referenceOrder=referenceOrder.filter(item=>item!==id);else referenceOrder.push(id);renderCanvas()}
 
+function saveActiveProject(){
+  if(!activeProjectId)return;
+  projectStates[activeProjectId]={nodes:clone(nodes),tasks:clone(tasks),view:{...view},references:[...referenceOrder]};
+  const project=projects.find(item=>item.id===activeProjectId);if(project)project.updated='刚刚';
+}
+
+function renderProjects(){
+  $('#project-count').textContent=projects.length;
+  $('#project-grid').innerHTML=projects.map(project=>{
+    const state=projectStates[project.id],count=state?.tasks.length||0,cover=count?`<span class="node-art" style="--art:${palettes[project.art%palettes.length]}"></span>`:'<span>IH</span>';
+    return `<article class="demo-project-card" data-project-id="${project.id}"><button class="demo-project-cover ${count?'':'empty'}" data-project-action="open">${cover}</button><div class="demo-project-body"><div><h2>${escapeHtml(project.name)}</h2><p>${count} 次生成 · ${project.updated}</p></div><div class="demo-project-actions"><button data-project-action="rename">重命名</button><button data-project-action="archive">归档</button></div></div></article>`
+  }).join('')||'<div class="empty-state">还没有项目，先创建一个。</div>';
+}
+
+function openProject(projectId){
+  saveActiveProject();activeProjectId=projectId;
+  const state=projectStates[projectId]||{nodes:[],tasks:[],view:{x:100,y:80,scale:1},references:[]};
+  nodes=clone(state.nodes);tasks=clone(state.tasks);view={...state.view};referenceOrder=[...state.references];selectedIds.clear();inspectedNodeId=null;draftSnapshot=null;setDockMode(false);
+  const project=projects.find(item=>item.id===projectId);$('#canvas-project-name').textContent=project?.name||'未命名项目';
+  $('#queue-count').textContent=tasks.filter(task=>task.status==='running').length;renderHistory();switchView('create');renderCanvas();if(nodes.length)requestAnimationFrame(fitView);
+}
+
+function setDemoRole(role){
+  demoRole=role==='admin'?'admin':'user';const isAdmin=demoRole==='admin';
+  document.querySelector('.admin-only').hidden=!isAdmin;$('#demo-account-label').textContent=`演示部门 · ${isAdmin?'管理员':'普通用户'}`;$('#account-menu-button').textContent=isAdmin?'管':'普';$('#account-menu').classList.remove('open');
+  if(!isAdmin&&location.hash==='#admin')switchView('projects');
+  toast(isAdmin?'已切换为管理员预览，可见系统管理':'已切换为普通用户，不显示管理入口');
+}
+
 function switchView(name){
+  if(name==='admin'&&demoRole!=='admin')name='projects';
   document.querySelectorAll('.view').forEach(node=>node.classList.toggle('active',node.id===`${name}-view`));
   document.querySelectorAll('.nav-tab').forEach(node=>node.classList.toggle('active',node.dataset.view===name));
   document.body.classList.toggle('canvas-active',name==='create');
+  document.body.classList.toggle('in-project',name==='create'||name==='history');
   location.hash=name;
+  if(name==='projects')renderProjects();
   if(name==='create')requestAnimationFrame(renderCanvas);
 }
 
@@ -234,6 +287,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.querySelector('[data-action="zoom-out"]').addEventListener('click',()=>zoomCanvas(view.scale-.1));
   document.querySelector('[data-action="zoom-reset"]').addEventListener('click',()=>{view.scale=1;applyViewport()});
   document.querySelector('[data-view-jump="history"]').addEventListener('click',()=>switchView('history'));
+  document.querySelector('[data-view-jump="projects"]').addEventListener('click',()=>{saveActiveProject();switchView('projects')});
+  $('#new-project-form').addEventListener('submit',event=>{event.preventDefault();const name=$('#new-project-name').value.trim();if(!name)return;const id=`p${Date.now()}`;projects.unshift({id,name,updated:'刚刚',art:projects.length%palettes.length});projectStates[id]={nodes:[],tasks:[],view:{x:100,y:80,scale:1},references:[]};$('#new-project-name').value='';renderProjects();toast('项目已创建，自动拥有一张独立画布')});
+  $('#project-grid').addEventListener('click',event=>{const action=event.target.closest('[data-project-action]'),card=event.target.closest('[data-project-id]');if(!action||!card)return;const id=card.dataset.projectId,project=projects.find(item=>item.id===id);if(action.dataset.projectAction==='open')openProject(id);if(action.dataset.projectAction==='rename'){const name=prompt('修改项目名称',project.name)?.trim();if(name){project.name=name;if(id===activeProjectId)$('#canvas-project-name').textContent=name;renderProjects()}}if(action.dataset.projectAction==='archive'){projects=projects.filter(item=>item.id!==id);delete projectStates[id];if(activeProjectId===id)activeProjectId=projects[0]?.id||null;renderProjects();toast('项目已归档，生成记录仍会保留')}});
+  $('#account-menu-button').addEventListener('click',event=>{event.stopPropagation();$('#account-menu').classList.toggle('open')});
+  $('#account-menu').addEventListener('click',event=>{const role=event.target.closest('[data-demo-role]')?.dataset.demoRole;if(role)setDemoRole(role)});
+  document.addEventListener('click',event=>{if(!event.target.closest('.account'))$('#account-menu').classList.remove('open')});
   $('#reference-picker-button').addEventListener('click',()=>{referencePickMode=!referencePickMode;renderSelectedAssets();toast(referencePickMode?'参考图选择已开启：按 Shift＋左键选择图片':'参考图选择已完成')});
   $('#exit-inspection').addEventListener('click',exitInspection);
   $('#copy-prompt').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('#prompt').value);toast('提示词已复制')}catch{toast('浏览器未允许复制，请手动复制')}});
@@ -263,5 +322,5 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.querySelector('.lightbox-stage').addEventListener('wheel',event=>{event.preventDefault();setLightboxScale(lightboxScale+(event.deltaY<0?.15:-.15))},{passive:false});
   const lightboxArt=$('#lightbox-art');lightboxArt.addEventListener('pointerdown',event=>{event.preventDefault();lightboxDrag={x:event.clientX,y:event.clientY,panX:lightboxPanX,panY:lightboxPanY};lightboxArt.setPointerCapture(event.pointerId);lightboxArt.classList.add('dragging')});lightboxArt.addEventListener('pointermove',event=>{if(!lightboxDrag)return;lightboxPanX=lightboxDrag.panX+event.clientX-lightboxDrag.x;lightboxPanY=lightboxDrag.panY+event.clientY-lightboxDrag.y;applyLightboxTransform()});const endLightboxDrag=event=>{if(!lightboxDrag)return;lightboxDrag=null;lightboxArt.classList.remove('dragging');if(lightboxArt.hasPointerCapture(event.pointerId))lightboxArt.releasePointerCapture(event.pointerId)};lightboxArt.addEventListener('pointerup',endLightboxDrag);lightboxArt.addEventListener('pointercancel',endLightboxDrag);
   document.addEventListener('keydown',event=>{if($('#lightbox').open){if(event.key==='Escape')closeLightbox();if(event.key==='ArrowLeft')handleLightbox('previous');if(event.key==='ArrowRight')handleLightbox('next');return}if((event.key==='Delete'||event.key==='Backspace')&&!event.target.matches('textarea,input,[contenteditable]')){nodes=nodes.filter(node=>!selectedIds.has(node.id));selectedIds.clear();referenceOrder=[];renderCanvas()}});
-  renderModels();renderStatus();renderHistory();renderCanvas();switchView(location.hash.slice(1)||'create');requestAnimationFrame(fitView);setTimeout(()=>{const running=tasks.find(task=>task.id==='a3');if(running){running.status='succeeded';$('#queue-count').textContent='0';renderCanvas();renderHistory()}},3500);
+  renderModels();renderStatus();renderHistory();renderCanvas();renderProjects();setDemoRole('user');switchView(location.hash.slice(1)||'projects');if(location.hash==='#create')requestAnimationFrame(fitView);setTimeout(()=>{const running=tasks.find(task=>task.id==='a3');if(running){running.status='succeeded';$('#queue-count').textContent='0';renderCanvas();renderHistory()}},3500);
 });

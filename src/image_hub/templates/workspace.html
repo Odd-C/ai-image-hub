@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block body %}
 <header class="topbar">
-  <a class="brand" href="/"><span class="brand-mark">IH</span><span>AI Image Hub</span></a>
+  <a class="brand" href="/projects"><span class="brand-mark">IH</span><span>AI Image Hub</span></a>
   <nav>
+    <a href="/projects">项目</a>
     <button class="nav-tab active" data-view="create">创作</button>
     <button class="nav-tab" data-view="history">历史</button>
     {% if user.role == "admin" %}<a href="/admin">管理</a>{% endif %}
@@ -10,7 +11,8 @@
   <div class="account"><span>{{ user.display_name or user.username }}{% if user.department %} · {{ user.department }}{% endif %}</span><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">退出</button></form></div>
 </header>
 
-<main class="app-shell">
+<main class="app-shell" data-project-id="{{ project.id }}">
+  <div class="project-context"><form action="/projects/{{ project.id }}/rename" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="name" value="{{ project.name }}" maxlength="160" aria-label="项目名称"><button class="secondary mini">保存名称</button></form><span>一个项目 · 一张画布</span></div>
   <section id="create-view" class="view active">
     <div class="composer">
       <div class="section-heading"><div><span class="eyebrow">CREATE</span><h1>生成新图像</h1></div><p>输入内容将原样提交，不做提示词扩写。</p></div>
@@ -63,6 +65,6 @@
   </div>
   <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
 </dialog>
-<script>window.IMAGE_HUB_MODELS = {{ profiles | tojson }}; window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }};</script>
+<script>window.IMAGE_HUB_MODELS = {{ profiles | tojson }}; window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }}; window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};</script>
 <script src="/static/app.js" defer></script>
 {% endblock %}

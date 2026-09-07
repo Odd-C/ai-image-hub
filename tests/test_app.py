@@ -4,29 +4,44 @@ import re
 from fastapi.testclient import TestClient
 
 from image_hub.app import app
+from image_hub.config import settings
 from image_hub.db import SessionLocal
-from image_hub.models import Generation, User
+from image_hub.models import Generation, Project, User
 from image_hub.providers import ModelProfile, execute_generation
 
 
-def login(client: TestClient) -> str:
+def login(client: TestClient, username: str = "admin") -> str:
     page = client.get("/login")
     token = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
     response = client.post(
-        "/login", data={"username": "admin", "password": "test-password", "csrf": token},
+        "/login",
+        data={"username": username, "password": "test-password", "csrf": token},
         follow_redirects=False,
     )
     assert response.status_code == 303
     return token
 
 
-def test_health_and_login_protection():
+def create_project(client: TestClient, token: str, name: str) -> str:
+    response = client.post(
+        "/projects", data={"name": name, "csrf": token}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    return response.headers["location"].rsplit("/", 1)[-1]
+
+
+def test_health_login_and_project_workspace():
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
         assert client.get("/", follow_redirects=False).status_code == 303
-        assert client.get("/api/generations").status_code == 401
-        login(client)
-        assert "生成新图像" in client.get("/").text
+        assert client.get("/api/projects/unknown/generations").status_code == 401
+        token = login(client)
+        assert "我的项目" in client.get("/projects").text
+        project_id = create_project(client, token, "测试项目")
+        workspace = client.get(f"/projects/{project_id}")
+        assert workspace.status_code == 200
+        assert "生成新图像" in workspace.text
+        assert "测试项目" in workspace.text
 
 
 def test_prompt_history_and_three_state_marking(monkeypatch):
@@ -37,10 +52,11 @@ def test_prompt_history_and_three_state_marking(monkeypatch):
     monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
     with TestClient(app) as client:
         token = login(client)
+        project_id = create_project(client, token, "提示词历史项目")
         response = client.post(
-            "/api/generations",
+            f"/api/projects/{project_id}/generations",
             data={"prompt": "原始提示词，不要改写", "profile_id": profile.id,
-                  "ratio": "1:1", "quality": "standard",
+                  "ratio": "1:1", "resolution": "2K", "quality": "standard",
                   "idempotency_key": "1234567890abcdef"},
             headers={"X-CSRF-Token": token},
         )
@@ -49,13 +65,14 @@ def test_prompt_history_and_three_state_marking(monkeypatch):
         with SessionLocal() as session:
             generation = session.get(Generation, generation_id)
             assert generation.original_prompt == "原始提示词，不要改写"
+            assert generation.project_id == project_id
             generation.status = "succeeded"
             session.commit()
-        history = client.get("/api/generations").json()["items"]
+        history = client.get(f"/api/projects/{project_id}/generations").json()["items"]
         assert history[0]["prompt"] == "原始提示词，不要改写"
         for sentiment in ("satisfied", "adopted", "dissatisfied"):
             marked = client.post(
-                f"/api/generations/{generation_id}/sentiment",
+                f"/api/projects/{project_id}/generations/{generation_id}/sentiment",
                 json={"sentiment": sentiment},
                 headers={"X-CSRF-Token": token},
             )
@@ -63,9 +80,10 @@ def test_prompt_history_and_three_state_marking(monkeypatch):
             assert marked.json()["sentiment"] == sentiment
 
 
-def test_users_are_isolated():
+def test_projects_and_users_are_isolated():
     with TestClient(app) as client:
-        login(client)
+        token = login(client)
+        own_project_id = create_project(client, token, "自己的项目")
         with SessionLocal() as session:
             admin = session.query(User).filter_by(username="admin").one()
             foreign = User(
@@ -73,15 +91,48 @@ def test_users_are_isolated():
             )
             session.add(foreign)
             session.flush()
+            foreign_project = Project(user_id=foreign.id, name="其他用户项目")
+            session.add(foreign_project)
+            session.flush()
             generation = Generation(
-                user_id=foreign.id, idempotency_key="foreign-idempotent", original_prompt="不可见提示词", provider="api",
-                model_id="x", model_label="x", status="succeeded",
+                user_id=foreign.id, project_id=foreign_project.id,
+                idempotency_key="foreign-idempotent", original_prompt="不可见提示词",
+                provider="api", model_id="x", model_label="x", status="succeeded",
             )
             session.add(generation)
             session.commit()
-            foreign_id = generation.id
-        items = client.get("/api/generations").json()["items"]
-        assert all(item["id"] != foreign_id for item in items)
+            foreign_project_id = foreign_project.id
+        assert client.get(f"/projects/{foreign_project_id}").status_code == 404
+        assert client.get(f"/api/projects/{foreign_project_id}/generations").status_code == 404
+        own_history = client.get(f"/api/projects/{own_project_id}/generations").json()["items"]
+        assert own_history == []
+
+
+def test_canvas_state_is_unique_per_project():
+    with TestClient(app) as client:
+        token = login(client)
+        first_id = create_project(client, token, "画布甲")
+        second_id = create_project(client, token, "画布乙")
+        first_state = {"viewport": {"x": 10, "y": 20, "zoom": 0.8}, "nodes": [{"id": "a"}]}
+        saved = client.put(
+            f"/api/projects/{first_id}/canvas",
+            json=first_state,
+            headers={"X-CSRF-Token": token},
+        )
+        assert saved.status_code == 200
+        assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == first_state
+        assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == {}
+
+        draft = {"prompt": "保留画布时保存草稿"}
+        assert client.put(
+            f"/api/projects/{first_id}/canvas",
+            json={"draft": draft},
+            headers={"X-CSRF-Token": token},
+        ).status_code == 200
+        assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == {
+            **first_state,
+            "draft": draft,
+        }
 
 
 def test_mutations_require_csrf(monkeypatch):
@@ -91,16 +142,18 @@ def test_mutations_require_csrf(monkeypatch):
     )
     monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
     with TestClient(app) as client:
-        login(client)
+        token = login(client)
+        project_id = create_project(client, token, "CSRF 项目")
         response = client.post(
-            "/api/generations",
+            f"/api/projects/{project_id}/generations",
             data={"prompt": "不能跨站提交", "profile_id": profile.id, "ratio": "1:1",
-                  "quality": "standard", "idempotency_key": "abcdef1234567890"},
+                  "resolution": "2K", "quality": "standard",
+                  "idempotency_key": "abcdef1234567890"},
         )
         assert response.status_code == 403
 
 
-def test_generation_submission_is_idempotent(monkeypatch):
+def test_generation_submission_is_idempotent_per_project(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
         upstream_model="test-image", enabled=True,
@@ -108,12 +161,65 @@ def test_generation_submission_is_idempotent(monkeypatch):
     monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
     with TestClient(app) as client:
         token = login(client)
+        first_project = create_project(client, token, "幂等项目甲")
+        second_project = create_project(client, token, "幂等项目乙")
         payload = {"prompt": "只应创建一条", "profile_id": profile.id, "ratio": "1:1",
-                   "quality": "standard", "idempotency_key": "same-key-12345678"}
-        first = client.post("/api/generations", data=payload, headers={"X-CSRF-Token": token})
-        second = client.post("/api/generations", data=payload, headers={"X-CSRF-Token": token})
-        assert first.status_code == second.status_code == 202
-        assert first.json()["id"] == second.json()["id"]
+                   "resolution": "2K", "quality": "standard",
+                   "idempotency_key": "same-key-12345678"}
+        first_url = f"/api/projects/{first_project}/generations"
+        first = client.post(first_url, data=payload, headers={"X-CSRF-Token": token})
+        duplicate = client.post(first_url, data=payload, headers={"X-CSRF-Token": token})
+        second = client.post(
+            f"/api/projects/{second_project}/generations",
+            data=payload,
+            headers={"X-CSRF-Token": token},
+        )
+        assert first.status_code == duplicate.status_code == second.status_code == 202
+        assert first.json()["id"] == duplicate.json()["id"]
+        assert second.json()["id"] != first.json()["id"]
+
+
+def test_active_task_limit_applies_across_projects(monkeypatch):
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
+    )
+    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+    monkeypatch.setattr(settings, "max_active_tasks_per_user", 1)
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        session.add(
+            User(
+                username="limited-member",
+                display_name="额度成员",
+                password_hash=admin.password_hash,
+            )
+        )
+        session.commit()
+    with TestClient(app) as client:
+        token = login(client, "limited-member")
+        first_project = create_project(client, token, "额度项目甲")
+        second_project = create_project(client, token, "额度项目乙")
+        payload = {
+            "prompt": "账号级额度测试",
+            "profile_id": profile.id,
+            "ratio": "1:1",
+            "resolution": "2K",
+            "quality": "standard",
+            "idempotency_key": "limit-key-12345678",
+        }
+        assert client.post(
+            f"/api/projects/{first_project}/generations",
+            data=payload,
+            headers={"X-CSRF-Token": token},
+        ).status_code == 202
+        payload["idempotency_key"] = "limit-key-87654321"
+        assert client.post(
+            f"/api/projects/{second_project}/generations",
+            data=payload,
+            headers={"X-CSRF-Token": token},
+        ).status_code == 429
 
 
 def test_external_failure_requires_recovery(monkeypatch):
@@ -129,15 +235,14 @@ def test_external_failure_requires_recovery(monkeypatch):
     monkeypatch.setattr("image_hub.providers._execute_api", fail_after_submission)
     with SessionLocal() as session:
         admin = session.query(User).filter_by(username="admin").one()
+        project = Project(user_id=admin.id, name="恢复项目")
+        session.add(project)
+        session.flush()
         generation = Generation(
-            user_id=admin.id,
-            idempotency_key="recovery-test-key",
-            original_prompt="恢复测试",
-            provider="api",
-            model_id="test-image",
-            model_label="Test Image",
-            provider_snapshot_json=json.dumps(profile.public_dict()),
-            status="running",
+            user_id=admin.id, project_id=project.id,
+            idempotency_key="recovery-test-key", original_prompt="恢复测试",
+            provider="api", model_id="test-image", model_label="Test Image",
+            provider_snapshot_json=json.dumps(profile.public_dict()), status="running",
         )
         session.add(generation)
         session.commit()
@@ -147,6 +252,20 @@ def test_external_failure_requires_recovery(monkeypatch):
         generation = session.get(Generation, generation_id)
         assert generation.status == "recovery_required"
         assert generation.external_task_id == "paid-upstream-task"
+
+
+def test_non_admin_has_no_management_ui_or_access():
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        session.add(User(username="member", display_name="普通成员", password_hash=admin.password_hash))
+        session.commit()
+    with TestClient(app) as client:
+        token = login(client, "member")
+        projects = client.get("/projects")
+        assert "系统管理" not in projects.text
+        project_id = create_project(client, token, "普通成员项目")
+        assert ">管理<" not in client.get(f"/projects/{project_id}").text
+        assert client.get("/admin").status_code == 403
 
 
 def test_security_headers_are_present():

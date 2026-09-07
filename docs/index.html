@@ -5,21 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AI Image Hub · 无限画布演示</title>
-  <link rel="stylesheet" href="demo.css?v=canvas-5">
+  <link rel="stylesheet" href="demo.css?v=projects-1">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#create"><span class="brand-mark">IH</span><span>AI Image Hub</span><em>CANVAS DEMO</em></a>
+    <a class="brand" href="#projects"><span class="brand-mark">IH</span><span>AI Image Hub</span><em>CANVAS DEMO</em></a>
     <nav>
-      <button class="nav-tab active" data-view="create">创作画布</button>
-      <button class="nav-tab" data-view="history">历史</button>
-      <button class="nav-tab" data-view="admin">管理</button>
+      <button class="nav-tab active" data-view="projects">项目</button>
+      <button class="nav-tab project-only" data-view="create">创作画布</button>
+      <button class="nav-tab project-only" data-view="history">历史</button>
+      <button class="nav-tab admin-only" data-view="admin" hidden>系统管理</button>
     </nav>
-    <div class="account"><span class="save-state"><i></i>已自动保存</span><span>演示部门 · 演示用户</span><button class="avatar">示</button></div>
+    <div class="account"><span class="save-state project-only"><i></i>已自动保存</span><span id="demo-account-label">演示部门 · 普通用户</span><button class="avatar" id="account-menu-button">普</button><div class="account-menu" id="account-menu"><b>身份预览</b><button data-demo-role="user">普通用户</button><button data-demo-role="admin">管理员</button></div></div>
   </header>
 
   <main class="app-shell">
-    <section id="create-view" class="view active canvas-view">
+    <section id="projects-view" class="view active projects-view page-view">
+      <div class="projects-heading"><div><span class="eyebrow">PROJECTS</span><h1>我的项目</h1><p>一个项目对应一张独立画布。每个账号可以创建和管理多个项目。</p></div><form id="new-project-form"><input id="new-project-name" maxlength="60" placeholder="输入项目名称" required><button class="primary" type="submit">＋ 新建项目</button></form></div>
+      <div class="project-summary"><span><b id="project-count">3</b> 个进行中项目</span><span>画布、提示词历史和生成结果按项目隔离</span></div>
+      <div class="demo-project-grid" id="project-grid"></div>
+    </section>
+
+    <section id="create-view" class="view canvas-view">
       <aside class="canvas-tools" aria-label="画布工具">
         <button class="tool active" title="选择节点；拖动空白处移动画布"><span>↖</span><small>选择</small></button>
         <label class="tool upload-tool" title="上传图片"><input id="canvas-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple><span>＋</span><small>上传</small></label>
@@ -35,7 +42,7 @@
         </div>
         <div class="selection-box" id="selection-box"></div>
         <div class="canvas-empty-hint"><b>拖入图片开始创作</b><span>空白处拖动画布 · 滚轮缩放 · Shift 多选</span></div>
-        <div class="canvas-breadcrumb"><b>香氛视觉探索</b><span>/</span><span>主画布</span></div>
+        <div class="canvas-breadcrumb"><button type="button" data-view-jump="projects">‹ 项目</button><b id="canvas-project-name">香氛视觉探索</b><span>/</span><span>主画布</span></div>
         <div class="canvas-status"><span id="selection-status">未选择节点</span></div>
         <div class="zoom-control">
           <button data-action="zoom-out">−</button>
@@ -87,6 +94,6 @@
     <div class="lightbox-stage"><button type="button" class="lightbox-nav previous" data-lightbox-action="previous">‹</button><div class="lightbox-canvas"><div id="lightbox-art" class="lightbox-art"></div></div><button type="button" class="lightbox-nav next" data-lightbox-action="next">›</button></div>
     <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
   </dialog>
-  <script src="demo.js?v=canvas-5"></script>
+  <script src="demo.js?v=projects-1"></script>
 </body>
 </html>
