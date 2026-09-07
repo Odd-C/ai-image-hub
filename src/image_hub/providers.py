@@ -275,7 +275,10 @@ def execute_generation(generation_id: str) -> None:
         generation = session.get(Generation, generation_id)
         if not generation:
             return
-        profile = get_profile(f"{generation.provider}:{generation.model_id}")
+        try:
+            profile = ModelProfile(**json.loads(generation.provider_snapshot_json or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            profile = get_profile(f"{generation.provider}:{generation.model_id}")
         generation.status = "running"
         session.commit()
         try:

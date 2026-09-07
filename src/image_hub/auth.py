@@ -2,11 +2,18 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
+import threading
+import time
+from collections import defaultdict, deque
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from image_hub.models import User
+
+_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_login_lock = threading.Lock()
 
 
 def hash_password(password: str) -> str:
@@ -39,3 +46,32 @@ def current_user(request: Request, session: Session) -> User:
 def require_admin(user: User) -> None:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="需要管理员权限")
+
+
+def csrf_token(request: Request) -> str:
+    token = request.session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = token
+    return token
+
+
+def require_csrf(request: Request, submitted: str = "") -> None:
+    expected = request.session.get("csrf_token", "")
+    actual = submitted or request.headers.get("X-CSRF-Token", "")
+    if not expected or not actual or not hmac.compare_digest(expected, actual):
+        raise HTTPException(status_code=403, detail="请求校验失败，请刷新页面后重试")
+
+
+def check_login_rate_limit(key: str, *, success: bool = False) -> None:
+    now = time.monotonic()
+    with _login_lock:
+        attempts = _login_attempts[key]
+        while attempts and attempts[0] < now - 300:
+            attempts.popleft()
+        if success:
+            _login_attempts.pop(key, None)
+            return
+        if len(attempts) >= 5:
+            raise HTTPException(status_code=429, detail="登录尝试过多，请五分钟后再试")
+        attempts.append(now)

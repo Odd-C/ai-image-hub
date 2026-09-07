@@ -7,7 +7,15 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from image_hub.auth import current_user, hash_password, require_admin, verify_password
+from image_hub.auth import (
+    check_login_rate_limit,
+    csrf_token,
+    current_user,
+    hash_password,
+    require_admin,
+    require_csrf,
+    verify_password,
+)
 from image_hub.config import settings
 from image_hub.db import get_session
 from image_hub.models import Generation, ReferenceImage, User, new_id
@@ -35,7 +43,9 @@ def _owned_generation(session: Session, user: User, generation_id: str) -> Gener
 
 @router.get("/login")
 def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"error": ""})
+    return templates.TemplateResponse(
+        request, "login.html", {"error": "", "csrf_token": csrf_token(request)}
+    )
 
 
 @router.post("/login")
@@ -43,20 +53,31 @@ def login(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    csrf: str = Form(...),
     session: Session = Depends(get_session),
 ):
+    require_csrf(request, csrf)
+    rate_key = f"{request.client.host if request.client else 'unknown'}:{username.strip()}"
+    check_login_rate_limit(rate_key)
     user = session.scalar(select(User).where(User.username == username.strip()))
     if user is None or not user.is_active or not verify_password(password, user.password_hash):
         return templates.TemplateResponse(
-            request, "login.html", {"error": "账号或密码不正确"}, status_code=401
+            request,
+            "login.html",
+            {"error": "账号或密码不正确", "csrf_token": csrf_token(request)},
+            status_code=401,
         )
+    check_login_rate_limit(rate_key, success=True)
+    old_csrf = request.session.get("csrf_token")
     request.session.clear()
     request.session["user_id"] = user.id
+    request.session["csrf_token"] = old_csrf
     return RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/logout")
-def logout(request: Request):
+def logout(request: Request, csrf: str = Form(...)):
+    require_csrf(request, csrf)
     request.session.clear()
     return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -69,7 +90,11 @@ def workspace(request: Request, session: Session = Depends(get_session)):
     return templates.TemplateResponse(
         request,
         "workspace.html",
-        {"user": user, "profiles": [profile.public_dict() for profile in model_profiles()]},
+        {
+            "user": user,
+            "profiles": [profile.public_dict() for profile in model_profiles()],
+            "csrf_token": csrf_token(request),
+        },
     )
 
 
@@ -81,10 +106,20 @@ async def create_generation(
     ratio: str = Form("1:1"),
     quality: str = Form("standard"),
     parent_generation_id: str = Form(""),
+    idempotency_key: str = Form(..., min_length=16, max_length=64),
     references: list[UploadFile] = File(default=[]),
     session: Session = Depends(get_session),
 ):
+    require_csrf(request)
     user = current_user(request, session)
+    existing = session.scalar(
+        select(Generation).where(
+            Generation.user_id == user.id,
+            Generation.idempotency_key == idempotency_key,
+        )
+    )
+    if existing:
+        return {"id": existing.id, "status": existing.status}
     profile = get_profile(profile_id)
     if profile is None or not profile.enabled:
         raise HTTPException(503, "平台或模型尚未启用")
@@ -112,10 +147,12 @@ async def create_generation(
     clean_prompt = prompt.strip()
     generation = Generation(
         user_id=user.id,
+        idempotency_key=idempotency_key,
         original_prompt=clean_prompt,
         provider=profile.provider,
         model_id=profile.id.split(":", 1)[1],
         model_label=profile.label,
+        provider_snapshot_json=json.dumps(profile.public_dict(), ensure_ascii=False),
         parameters_json=json.dumps({"ratio": ratio, "quality": quality}, ensure_ascii=False),
         parent_generation_id=parent_generation_id,
         status="queued",
@@ -199,6 +236,7 @@ async def mark_sentiment(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    require_csrf(request)
     user = current_user(request, session)
     payload = await request.json()
     sentiment = str(payload.get("sentiment", ""))
@@ -218,6 +256,7 @@ def retry_generation(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    require_csrf(request)
     user = current_user(request, session)
     source = _owned_generation(session, user, generation_id)
     if source.status not in {"failed", "recovery_required"} or source.external_task_id:
@@ -277,8 +316,10 @@ def admin_page(request: Request, session: Session = Depends(get_session)):
         )
     }
     return templates.TemplateResponse(
-        request, "admin.html", {"user": user, "users": users, "counts": counts,
-                                "profiles": model_profiles()}
+        request,
+        "admin.html",
+        {"user": user, "users": users, "counts": counts,
+         "profiles": model_profiles(), "csrf_token": csrf_token(request)},
     )
 
 
@@ -290,8 +331,10 @@ def create_user(
     display_name: str = Form("", max_length=120),
     department: str = Form("", max_length=120),
     role: str = Form("user"),
+    csrf: str = Form(...),
     session: Session = Depends(get_session),
 ):
+    require_csrf(request, csrf)
     admin = current_user(request, session)
     require_admin(admin)
     clean_username = username.strip()
@@ -306,7 +349,13 @@ def create_user(
 
 
 @router.post("/admin/users/{user_id}/toggle")
-def toggle_user(user_id: str, request: Request, session: Session = Depends(get_session)):
+def toggle_user(
+    user_id: str,
+    request: Request,
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
     admin = current_user(request, session)
     require_admin(admin)
     user = session.get(User, user_id)

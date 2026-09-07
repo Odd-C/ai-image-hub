@@ -32,13 +32,16 @@ class User(Base):
 
 class Generation(Base):
     __tablename__ = "generations"
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), index=True)
     original_prompt: Mapped[str] = mapped_column(Text)
     provider: Mapped[str] = mapped_column(String(40), index=True)
     model_id: Mapped[str] = mapped_column(String(120), index=True)
     model_label: Mapped[str] = mapped_column(String(160))
+    provider_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
     parameters_json: Mapped[str] = mapped_column(Text, default="{}")
     reference_manifest_json: Mapped[str] = mapped_column(Text, default="[]")
     parent_generation_id: Mapped[str] = mapped_column(String(32), default="", index=True)

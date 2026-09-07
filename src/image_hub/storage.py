@@ -9,6 +9,7 @@ from PIL import Image, UnidentifiedImageError
 from image_hub.config import settings
 
 ALLOWED_FORMATS = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}
+MAX_IMAGE_PIXELS = 60_000_000
 
 
 class InvalidImage(ValueError):
@@ -37,6 +38,8 @@ async def store_reference(generation_id: str, reference_id: str, upload: UploadF
         raise InvalidImage("无法识别该图片") from exc
     if image_format not in ALLOWED_FORMATS or width < 64 or height < 64:
         raise InvalidImage("仅支持宽高不小于 64px 的 PNG、JPEG、WebP")
+    if width * height > MAX_IMAGE_PIXELS:
+        raise InvalidImage("图片像素总量过大")
     extension = ALLOWED_FORMATS[image_format]
     storage_key = f"generations/{generation_id}/references/{reference_id}{extension}"
     target = settings.storage_root / storage_key

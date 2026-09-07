@@ -4,6 +4,12 @@ const labels = {libtv: 'LibTV', lovart: 'Lovart', api: 'API', queued: '排队中
 const sentimentLabels = {satisfied: '满意', adopted: '采用', dissatisfied: '不满意'};
 let historyItems = [];
 let refreshTimer = null;
+const csrfHeaders = {'X-CSRF-Token': window.IMAGE_HUB_CSRF || ''};
+
+function newIdempotencyKey() {
+  const key = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}-${Math.random()}`;
+  $('#idempotency-key').value = key.replaceAll('-', '').replaceAll('.', '');
+}
 
 function escapeHtml(value = '') {
   const node = document.createElement('div');
@@ -106,10 +112,10 @@ async function handleAction(event) {
   try {
     target.disabled = true;
     if (target.dataset.action === 'sentiment') {
-      await responseJson(await fetch(`/api/generations/${target.dataset.id}/sentiment`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sentiment: target.dataset.value})}));
+      await responseJson(await fetch(`/api/generations/${target.dataset.id}/sentiment`, {method: 'POST', headers: {'Content-Type': 'application/json', ...csrfHeaders}, body: JSON.stringify({sentiment: target.dataset.value})}));
       toast(`已标记为${sentimentLabels[target.dataset.value]}`);
     } else if (target.dataset.action === 'retry') {
-      await responseJson(await fetch(`/api/generations/${target.dataset.id}/retry`, {method: 'POST'}));
+      await responseJson(await fetch(`/api/generations/${target.dataset.id}/retry`, {method: 'POST', headers: csrfHeaders}));
       toast('任务已重新排队');
     }
     await loadHistory();
@@ -129,6 +135,7 @@ function debounce(fn, wait = 300) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initModelControls();
+  newIdempotencyKey();
   $('#provider-select').addEventListener('change', () => renderModelOptions());
   $('#profile-select').addEventListener('change', renderCapabilities);
   $('#prompt').addEventListener('input', event => $('#prompt-count').textContent = event.target.value.length);
@@ -143,12 +150,13 @@ document.addEventListener('DOMContentLoaded', () => {
     button.disabled = true;
     button.textContent = '正在提交…';
     try {
-      const result = await responseJson(await fetch('/api/generations', {method: 'POST', body: new FormData(event.target)}));
+      const result = await responseJson(await fetch('/api/generations', {method: 'POST', headers: csrfHeaders, body: new FormData(event.target)}));
       toast(`任务 ${result.id.slice(0, 8)} 已进入队列`);
       event.target.reset();
       $('#prompt-count').textContent = '0';
       $('#reference-preview').innerHTML = '';
       $('#parent-id').value = '';
+      newIdempotencyKey();
       initModelControls();
       await loadHistory();
     } catch (error) { toast(error.message, true); }
