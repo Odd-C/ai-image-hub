@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}管理 · AI Image Hub{% endblock %}
+{% block body %}
+<header class="topbar"><a class="brand" href="/"><span class="brand-mark">IH</span><span>AI Image Hub</span></a><nav><a href="/">返回工作台</a></nav><div class="account"><span>{{ user.display_name or user.username }}</span></div></header>
+<main class="admin-shell">
+  <div class="section-heading"><div><span class="eyebrow">ADMIN</span><h1>系统管理</h1></div><p>账号与平台状态仅保存在自有服务器。</p></div>
+  <section class="stats-row">{% for name in ["queued", "running", "succeeded", "failed"] %}<article><span>{{ name }}</span><strong>{{ counts.get(name, 0) }}</strong></article>{% endfor %}</section>
+  <section class="admin-grid">
+    <div class="admin-card"><h2>新增用户</h2><form action="/admin/users" method="post" class="admin-form"><label>用户名<input name="username" required minlength="2"></label><label>初始密码<input name="password" type="password" required minlength="8"></label><label>显示名称<input name="display_name"></label><label>部门<input name="department"></label><label>权限<select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label><button class="primary">创建账号</button></form></div>
+    <div class="admin-card wide"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>部门</th><th>权限</th><th>状态</th><th></th></tr></thead><tbody>{% for item in users %}<tr><td>{{ item.username }}</td><td>{{ item.display_name or "—" }}</td><td>{{ item.department or "—" }}</td><td>{{ item.role }}</td><td><span class="status-dot {{ 'on' if item.is_active else '' }}"></span>{{ "启用" if item.is_active else "停用" }}</td><td>{% if item.id != user.id %}<form action="/admin/users/{{ item.id }}/toggle" method="post"><button class="secondary mini">{{ "停用" if item.is_active else "启用" }}</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div>
+    <div class="admin-card full"><h2>模型连接状态</h2><div class="model-status-grid">{% for profile in profiles %}<div><span class="status-dot {{ 'on' if profile.enabled else '' }}"></span><b>{{ profile.label }}</b><small>{{ profile.provider }} · {{ "可用" if profile.enabled else "未配置" }}</small></div>{% endfor %}</div></div>
+  </section>
+</main>
+{% endblock %}

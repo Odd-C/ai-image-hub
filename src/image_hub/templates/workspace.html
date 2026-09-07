@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="topbar">
+  <a class="brand" href="/"><span class="brand-mark">IH</span><span>AI Image Hub</span></a>
+  <nav>
+    <button class="nav-tab active" data-view="create">创作</button>
+    <button class="nav-tab" data-view="history">历史</button>
+    {% if user.role == "admin" %}<a href="/admin">管理</a>{% endif %}
+  </nav>
+  <div class="account"><span>{{ user.display_name or user.username }}{% if user.department %} · {{ user.department }}{% endif %}</span><form method="post" action="/logout"><button class="text-button">退出</button></form></div>
+</header>
+
+<main class="app-shell">
+  <section id="create-view" class="view active">
+    <div class="composer">
+      <div class="section-heading"><div><span class="eyebrow">CREATE</span><h1>生成新图像</h1></div><p>输入内容将原样提交，不做提示词扩写。</p></div>
+      <form id="generation-form">
+        <input type="hidden" name="parent_generation_id" id="parent-id">
+        <label class="prompt-field"><span>提示词</span><textarea name="prompt" id="prompt" maxlength="12000" required placeholder="描述你想生成的画面……"></textarea><small><b id="prompt-count">0</b> / 12000</small></label>
+        <div class="reference-block">
+          <div><strong>参考图片</strong><span>可选，最多 14 张；提交顺序会被记录</span></div>
+          <label class="dropzone" id="dropzone"><input type="file" name="references" id="references" accept="image/png,image/jpeg,image/webp" multiple><span class="plus">＋</span><b>点击或拖入参考图</b><small>PNG / JPEG / WebP，单张不超过 30 MB</small></label>
+          <div id="reference-preview" class="reference-preview"></div>
+        </div>
+        <div class="settings-grid">
+          <label>平台<select id="provider-select"></select></label>
+          <label>模型<select name="profile_id" id="profile-select"></select></label>
+          <label>画面比例<select name="ratio" id="ratio-select"></select></label>
+          <label>质量<select name="quality" id="quality-select"></select></label>
+        </div>
+        <div class="submit-row"><span id="availability-note"></span><button class="primary generate" id="generate-button">开始生成 <span>→</span></button></div>
+      </form>
+    </div>
+    <aside class="recent-panel"><div class="panel-heading"><div><span class="eyebrow">LIVE QUEUE</span><h2>最近任务</h2></div><button class="icon-button" id="refresh-button" title="刷新">↻</button></div><div id="recent-list" class="result-list"></div></aside>
+  </section>
+
+  <section id="history-view" class="view">
+    <div class="history-header"><div><span class="eyebrow">ARCHIVE</span><h1>提示词与结果历史</h1><p>每次提交都以原始快照保存，可搜索并再次使用。</p></div>
+      <div class="filters"><input id="search-input" placeholder="搜索提示词"><select id="filter-provider"><option value="">全部平台</option><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select><select id="filter-sentiment"><option value="">全部标记</option><option value="satisfied">满意</option><option value="adopted">采用</option><option value="dissatisfied">不满意</option></select></div>
+    </div>
+    <div id="history-grid" class="history-grid"></div>
+  </section>
+</main>
+
+<div class="toast" id="toast" aria-live="polite"></div>
+<script>window.IMAGE_HUB_MODELS = {{ profiles | tojson }};</script>
+<script src="/static/app.js" defer></script>
+{% endblock %}
