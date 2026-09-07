@@ -1,5 +1,7 @@
 # AI Image Hub
 
+[在线前端演示](https://odd-c.github.io/ai-image-hub/)（静态模拟数据，不调用付费 API）
+
 公司部门内部使用的多平台 AI 生图工作台。第一阶段统一接入 Lovart、LibTV 和
 OpenAI Images 兼容 API。系统将用户原始提示词直接提交给所选模型，不做提示词扩写。
 

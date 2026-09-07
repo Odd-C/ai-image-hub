@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI Image Hub · 前端演示</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#create"><span class="brand-mark">IH</span><span>AI Image Hub</span><em>DEMO</em></a>
+    <nav>
+      <button class="nav-tab active" data-view="create">创作</button>
+      <button class="nav-tab" data-view="history">历史</button>
+      <button class="nav-tab" data-view="admin">管理</button>
+    </nav>
+    <div class="account"><span class="status-dot on"></span><span>设计部 · 周同学</span><button class="avatar">周</button></div>
+  </header>
+
+  <main class="app-shell">
+    <section id="create-view" class="view active">
+      <div class="composer panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">CREATE</span><h1>生成新图像</h1></div>
+          <p>输入内容将原样提交，不做提示词扩写。</p>
+        </div>
+        <form id="generation-form">
+          <label class="prompt-field">
+            <span>提示词</span>
+            <textarea id="prompt" maxlength="12000" required>现代极简风格的香水产品主视觉，透明玻璃瓶放置在浅灰色石材台面，柔和自然光，细腻阴影，高级商业摄影质感</textarea>
+            <small><b id="prompt-count">62</b> / 12000</small>
+          </label>
+
+          <div class="reference-block">
+            <div><strong>参考图片</strong><span>可选，提交顺序会被记录</span></div>
+            <label class="dropzone">
+              <input type="file" id="references" accept="image/png,image/jpeg,image/webp" multiple>
+              <span class="plus">＋</span><b>点击或拖入参考图</b><small>PNG / JPEG / WebP，单张不超过 30 MB</small>
+            </label>
+            <div id="reference-preview" class="reference-preview"></div>
+          </div>
+
+          <div class="settings-grid">
+            <label>平台<select id="provider-select"><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select></label>
+            <label>模型<select id="model-select"></select></label>
+            <label>画面比例<select id="ratio-select"><option>1:1</option><option>4:3</option><option>3:4</option><option>16:9</option><option>9:16</option></select></label>
+            <label>质量<select><option>standard</option></select></label>
+          </div>
+          <div class="submit-row"><span id="availability-note">LibTV · Lib Image</span><button class="primary generate">开始生成 <span>→</span></button></div>
+        </form>
+      </div>
+
+      <aside class="recent-panel panel">
+        <div class="panel-heading"><div><span class="eyebrow">LIVE QUEUE</span><h2>最近任务</h2></div><button class="icon-button" id="refresh-button">↻</button></div>
+        <div id="recent-list" class="result-list"></div>
+      </aside>
+    </section>
+
+    <section id="history-view" class="view">
+      <div class="history-header">
+        <div><span class="eyebrow">ARCHIVE</span><h1>提示词与结果历史</h1><p>每次提交都以原始快照保存，可搜索并再次使用。</p></div>
+        <div class="filters"><input id="search-input" placeholder="搜索提示词"><select id="filter-provider"><option value="">全部平台</option><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select><select id="filter-sentiment"><option value="">全部标记</option><option value="satisfied">满意</option><option value="adopted">采用</option><option value="dissatisfied">不满意</option></select></div>
+      </div>
+      <div class="history-summary"><span><b id="history-count">6</b> 条生成记录</span><span>提示词、参数和用户标记均已留档</span></div>
+      <div id="history-grid" class="history-grid"></div>
+    </section>
+
+    <section id="admin-view" class="view">
+      <div class="section-heading"><div><span class="eyebrow">ADMIN</span><h1>系统管理</h1></div><p>账号与平台凭证仅保存在公司服务器。</p></div>
+      <div class="stats-row"><article><span>QUEUED</span><strong>2</strong></article><article><span>RUNNING</span><strong>1</strong></article><article><span>SUCCEEDED</span><strong>128</strong></article><article><span>FAILED</span><strong>3</strong></article></div>
+      <div class="admin-grid">
+        <section class="admin-card"><h2>新增用户</h2><div class="admin-form"><label>用户名<input value="designer-03"></label><label>显示名称<input value="新设计师"></label><label>部门<input value="视觉设计部"></label><label>权限<select><option>普通用户</option><option>管理员</option></select></label><button class="primary" type="button" id="fake-create-user">创建账号</button></div></section>
+        <section class="admin-card wide"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>部门</th><th>权限</th><th>状态</th></tr></thead><tbody><tr><td>admin</td><td>管理员</td><td>技术部</td><td>admin</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>zhou</td><td>周同学</td><td>设计部</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>lin</td><td>林设计</td><td>品牌部</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr></tbody></table></div></section>
+        <section class="admin-card full"><h2>模型连接状态</h2><div id="model-status-grid" class="model-status-grid"></div></section>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="demo.js"></script>
+</body>
+</html>
