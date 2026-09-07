@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AI Image Hub · 无限画布演示</title>
-  <link rel="stylesheet" href="demo.css?v=canvas-1">
+  <link rel="stylesheet" href="demo.css?v=canvas-4">
 </head>
 <body>
   <header class="topbar">
@@ -21,8 +21,7 @@
   <main class="app-shell">
     <section id="create-view" class="view active canvas-view">
       <aside class="canvas-tools" aria-label="画布工具">
-        <button class="tool active" data-tool="select" title="选择 V"><span>↖</span><small>选择</small></button>
-        <button class="tool" data-tool="hand" title="抓手 H"><span>✋</span><small>抓手</small></button>
+        <button class="tool active" title="选择节点；拖动空白处移动画布"><span>↖</span><small>选择</small></button>
         <label class="tool upload-tool" title="上传图片"><input id="canvas-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple><span>＋</span><small>上传</small></label>
         <button class="tool" data-action="add-note" title="添加备注"><span>T</span><small>备注</small></button>
         <div class="tool-separator"></div>
@@ -43,7 +42,7 @@
           <button data-action="zoom-reset" id="canvas-zoom">100%</button>
           <button data-action="zoom-in">＋</button>
         </div>
-        <div class="minimap" id="minimap"><div class="minimap-viewport"></div></div>
+        <div class="minimap" id="minimap" title="点击小地图定位画布"></div>
       </div>
 
       <aside class="generation-dock">
@@ -54,7 +53,7 @@
           <div class="dock-settings">
             <label>平台<select id="provider-select"><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select></label>
             <label>模型<select id="model-select"></select></label>
-            <div class="dock-setting-row"><label>比例<select id="ratio-select"><option>1:1</option><option>4:3</option><option>3:4</option><option>16:9</option><option>9:16</option></select></label><label>分辨率<select id="resolution-select"></select></label></div>
+            <div class="dock-setting-row"><label>比例<select id="ratio-select"><option>1:1</option><option>4:3</option><option>3:4</option><option>16:9</option><option>9:16</option></select></label><label>分辨率<select id="resolution-select"></select></label><label>生成数量<select id="batch-count"><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="4">4 张</option></select></label></div>
           </div>
           <button class="primary generate" type="submit"><span>生成到画布</span><b>→</b></button>
           <small class="dock-footnote">原始提示词和所选素材快照会自动记录</small>
@@ -82,6 +81,6 @@
     <div class="lightbox-stage"><button type="button" class="lightbox-nav previous" data-lightbox-action="previous">‹</button><div class="lightbox-canvas"><div id="lightbox-art" class="lightbox-art"></div></div><button type="button" class="lightbox-nav next" data-lightbox-action="next">›</button></div>
     <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
   </dialog>
-  <script src="demo.js?v=canvas-2"></script>
+  <script src="demo.js?v=canvas-4"></script>
 </body>
 </html>
