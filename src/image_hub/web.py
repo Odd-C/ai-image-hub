@@ -69,6 +69,21 @@ def _owned_project_generation(
     return generation
 
 
+def _locked_generation_user(request: Request, session: Session) -> User:
+    """Serialize one user's quota and idempotency checks before creating a task."""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    if session.get_bind().dialect.name == "sqlite":
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        user = session.get(User, user_id)
+    else:
+        user = session.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    return user
+
+
 @router.get("/login")
 def login_page(request: Request):
     return templates.TemplateResponse(
@@ -272,7 +287,7 @@ async def create_generation(
     session: Session = Depends(get_session),
 ):
     require_csrf(request)
-    user = current_user(request, session)
+    user = _locked_generation_user(request, session)
     project = _owned_project(session, user, project_id)
     existing = session.scalar(
         select(Generation).where(

@@ -1,8 +1,11 @@
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 from fastapi.testclient import TestClient
 
+from image_hub import web as web_module
 from image_hub.app import app
 from image_hub.config import settings
 from image_hub.db import SessionLocal
@@ -28,6 +31,35 @@ def create_project(client: TestClient, token: str, name: str) -> str:
     )
     assert response.status_code == 303
     return response.headers["location"].rsplit("/", 1)[-1]
+
+
+def install_submission_race_gate(
+    monkeypatch, profile: ModelProfile
+) -> tuple[Event, Event, Event]:
+    first_profile_entered = Event()
+    release_first = Event()
+    second_lock_attempted = Event()
+    attempt_lock = Lock()
+    attempt_count = 0
+    original_lock = web_module._locked_generation_user
+
+    def observed_lock(request, session):
+        nonlocal attempt_count
+        with attempt_lock:
+            attempt_count += 1
+            if attempt_count == 2:
+                second_lock_attempted.set()
+        return original_lock(request, session)
+
+    def delayed_profile(_):
+        if not first_profile_entered.is_set():
+            first_profile_entered.set()
+            assert release_first.wait(5)
+        return profile
+
+    monkeypatch.setattr(web_module, "_locked_generation_user", observed_lock)
+    monkeypatch.setattr(web_module, "get_profile", delayed_profile)
+    return first_profile_entered, release_first, second_lock_attempted
 
 
 def test_health_login_and_project_workspace():
@@ -220,6 +252,111 @@ def test_active_task_limit_applies_across_projects(monkeypatch):
             data=payload,
             headers={"X-CSRF-Token": token},
         ).status_code == 429
+
+
+def test_concurrent_idempotent_submissions_return_the_same_generation(monkeypatch):
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
+    )
+    monkeypatch.setattr(settings, "max_active_tasks_per_user", 50)
+    first_entered, release_first, second_attempted = install_submission_race_gate(
+        monkeypatch, profile
+    )
+    with TestClient(app) as first_client, TestClient(app) as second_client:
+        first_token = login(first_client)
+        second_token = login(second_client)
+        project_id = create_project(first_client, first_token, "并发幂等项目")
+        payload = {
+            "prompt": "并发幂等测试",
+            "profile_id": profile.id,
+            "ratio": "1:1",
+            "resolution": "2K",
+            "quality": "standard",
+            "idempotency_key": "concurrent-same-key",
+        }
+        url = f"/api/projects/{project_id}/generations"
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                first_client.post, url, data=payload, headers={"X-CSRF-Token": first_token}
+            )
+            assert first_entered.wait(5)
+            second_future = executor.submit(
+                second_client.post, url, data=payload, headers={"X-CSRF-Token": second_token}
+            )
+            assert second_attempted.wait(5)
+            release_first.set()
+            first_response = first_future.result(timeout=5)
+            second_response = second_future.result(timeout=5)
+
+        assert first_response.status_code == second_response.status_code == 202
+        assert first_response.json()["id"] == second_response.json()["id"]
+        with SessionLocal() as session:
+            assert session.query(Generation).filter_by(project_id=project_id).count() == 1
+
+
+def test_concurrent_cross_project_submissions_respect_user_limit(monkeypatch):
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
+    )
+    monkeypatch.setattr(settings, "max_active_tasks_per_user", 1)
+    first_entered, release_first, second_attempted = install_submission_race_gate(
+        monkeypatch, profile
+    )
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        session.add(
+            User(
+                username="concurrent-member",
+                display_name="并发额度成员",
+                password_hash=admin.password_hash,
+            )
+        )
+        session.commit()
+    with TestClient(app) as first_client, TestClient(app) as second_client:
+        first_token = login(first_client, "concurrent-member")
+        second_token = login(second_client, "concurrent-member")
+        first_project = create_project(first_client, first_token, "并发额度项目甲")
+        second_project = create_project(first_client, first_token, "并发额度项目乙")
+
+        def submit(client, token, project_id, key):
+            return client.post(
+                f"/api/projects/{project_id}/generations",
+                data={
+                    "prompt": "并发额度测试",
+                    "profile_id": profile.id,
+                    "ratio": "1:1",
+                    "resolution": "2K",
+                    "quality": "standard",
+                    "idempotency_key": key,
+                },
+                headers={"X-CSRF-Token": token},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                submit, first_client, first_token, first_project, "concurrent-limit-key-a"
+            )
+            assert first_entered.wait(5)
+            second_future = executor.submit(
+                submit, second_client, second_token, second_project, "concurrent-limit-key-b"
+            )
+            assert second_attempted.wait(5)
+            release_first.set()
+            responses = [first_future.result(timeout=5), second_future.result(timeout=5)]
+
+        assert sorted(response.status_code for response in responses) == [202, 429]
+        with SessionLocal() as session:
+            active_count = session.query(Generation).filter(
+                Generation.user_id == session.query(User.id).filter_by(
+                    username="concurrent-member"
+                ).scalar_subquery(),
+                Generation.status.in_(("queued", "running")),
+            ).count()
+            assert active_count == 1
 
 
 def test_external_failure_requires_recovery(monkeypatch):
