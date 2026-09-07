@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AI Image Hub · 前端演示</title>
-  <link rel="stylesheet" href="demo.css">
+  <link rel="stylesheet" href="demo.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -15,7 +15,7 @@
       <button class="nav-tab" data-view="history">历史</button>
       <button class="nav-tab" data-view="admin">管理</button>
     </nav>
-    <div class="account"><span class="status-dot on"></span><span>设计部 · 周同学</span><button class="avatar">周</button></div>
+    <div class="account"><span class="status-dot on"></span><span>演示部门 · 演示用户</span><button class="avatar">示</button></div>
   </header>
 
   <main class="app-shell">
@@ -36,7 +36,7 @@
             <div><strong>参考图片</strong><span>可选，提交顺序会被记录</span></div>
             <label class="dropzone">
               <input type="file" id="references" accept="image/png,image/jpeg,image/webp" multiple>
-              <span class="plus">＋</span><b>点击或拖入参考图</b><small>PNG / JPEG / WebP，单张不超过 30 MB</small>
+              <span class="plus">＋</span><b>点击或拖入参考图</b><small>可分多次追加选择 · PNG / JPEG / WebP</small>
             </label>
             <div id="reference-preview" class="reference-preview"></div>
           </div>
@@ -45,7 +45,8 @@
             <label>平台<select id="provider-select"><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select></label>
             <label>模型<select id="model-select"></select></label>
             <label>画面比例<select id="ratio-select"><option>1:1</option><option>4:3</option><option>3:4</option><option>16:9</option><option>9:16</option></select></label>
-            <label>质量<select><option>standard</option></select></label>
+            <label>分辨率<select id="resolution-select"><option>1K</option><option selected>2K</option><option>4K</option></select></label>
+            <label>质量档位<select><option value="standard">标准</option></select></label>
           </div>
           <div class="submit-row"><span id="availability-note">LibTV · Lib Image</span><button class="primary generate">开始生成 <span>→</span></button></div>
         </form>
@@ -71,13 +72,13 @@
       <div class="stats-row"><article><span>QUEUED</span><strong>2</strong></article><article><span>RUNNING</span><strong>1</strong></article><article><span>SUCCEEDED</span><strong>128</strong></article><article><span>FAILED</span><strong>3</strong></article></div>
       <div class="admin-grid">
         <section class="admin-card"><h2>新增用户</h2><div class="admin-form"><label>用户名<input value="designer-03"></label><label>显示名称<input value="新设计师"></label><label>部门<input value="视觉设计部"></label><label>权限<select><option>普通用户</option><option>管理员</option></select></label><button class="primary" type="button" id="fake-create-user">创建账号</button></div></section>
-        <section class="admin-card wide"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>部门</th><th>权限</th><th>状态</th></tr></thead><tbody><tr><td>admin</td><td>管理员</td><td>技术部</td><td>admin</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>zhou</td><td>周同学</td><td>设计部</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>lin</td><td>林设计</td><td>品牌部</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr></tbody></table></div></section>
+        <section class="admin-card wide"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>部门</th><th>权限</th><th>状态</th></tr></thead><tbody><tr><td>demo-admin</td><td>演示管理员</td><td>演示部门</td><td>admin</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>demo-user-01</td><td>演示用户 01</td><td>演示部门</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr><tr><td>demo-user-02</td><td>演示用户 02</td><td>演示部门</td><td>user</td><td><span class="status-dot on"></span>启用</td></tr></tbody></table></div></section>
         <section class="admin-card full"><h2>模型连接状态</h2><div id="model-status-grid" class="model-status-grid"></div></section>
       </div>
     </section>
   </main>
 
   <div class="toast" id="toast"></div>
-  <script src="demo.js"></script>
+  <script src="demo.js?v=4"></script>
 </body>
 </html>

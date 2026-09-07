@@ -24,6 +24,7 @@ class ModelProfile:
     supports_references: bool = True
     ratios: tuple[str, ...] = ("1:1", "4:3", "3:4", "16:9", "9:16")
     qualities: tuple[str, ...] = ("standard",)
+    resolutions: tuple[str, ...] = ("2K",)
     max_references: int = 14
 
     def public_dict(self) -> dict:
@@ -56,6 +57,13 @@ def model_profiles() -> tuple[ModelProfile, ...]:
         ModelProfile(
             id=f"libtv:{key}", label=label, provider="libtv", upstream_model=label,
             enabled=settings.libtv_cli.is_file(),
+            resolutions=(
+                ("1K",)
+                if key == "z-image"
+                else ("1K", "2K", "4K")
+                if key in {"lib-image-2", "nebula-ultra", "nebula-2-flash", "qwen-image-3"}
+                else ("2K",)
+            ),
         )
         for key, label in LIBTV_MODELS
     ]
@@ -67,10 +75,12 @@ def model_profiles() -> tuple[ModelProfile, ...]:
             ModelProfile(
                 "lovart:nano-banana-pro", "Nano Banana Pro", "lovart",
                 "generate_image_nano_banana_pro", lovart_ready, ratios=("1:1",),
+                resolutions=("2K",),
             ),
             ModelProfile(
                 "lovart:nano-banana-2", "Nano Banana 2", "lovart",
                 "generate_image_nano_banana_2", lovart_ready, ratios=("1:1",),
+                resolutions=("2K",),
             ),
         ]
     )
@@ -81,6 +91,7 @@ def model_profiles() -> tuple[ModelProfile, ...]:
                 ModelProfile(
                     id=f"api:{model_id}", label=label or model_id, provider="api",
                     upstream_model=model_id, enabled=bool(settings.openai_image_api_key),
+                    resolutions=("1K", "2K", "4K"),
                     max_references=4,
                 )
             )
@@ -148,11 +159,11 @@ def _execute_libtv(generation: Generation, profile: ModelProfile) -> None:
         "--set", f"ratio={params.get('ratio', '1:1')}", "--set", "count=1",
     ]
     if profile.upstream_model == "Lib Image":
-        command.extend(["--set", "quality=medium", "--set", "resolution=2K"])
+        command.extend(["--set", "quality=medium", "--set", f"resolution={params.get('resolution', '2K')}"])
     elif profile.upstream_model == "Qwen image 3.0":
-        command.extend(["--set", "quality=std", "--set", "resolution=2K"])
+        command.extend(["--set", "quality=std", "--set", f"resolution={params.get('resolution', '2K')}"])
     elif profile.upstream_model in {"General image Pro", "General image V2"}:
-        command.extend(["--set", "quality=2K"])
+        command.extend(["--set", f"quality={params.get('resolution', '2K')}"])
     if nodes:
         command.extend(["--set", "modeType=image2image"])
     for node in nodes:
@@ -250,11 +261,17 @@ def _data_url(path: Path) -> str:
 
 def _execute_api(generation: Generation, profile: ModelProfile) -> None:
     params = _params(generation)
-    ratio_sizes = {"1:1": "2048x2048", "4:3": "2048x1536", "3:4": "1536x2048", "16:9": "2048x1152", "9:16": "1152x2048"}
+    edge = {"1K": 1024, "2K": 2048, "4K": 4096}.get(params.get("resolution"), 2048)
+    ratio_dimensions = {
+        "1:1": (edge, edge), "4:3": (edge, edge * 3 // 4),
+        "3:4": (edge * 3 // 4, edge), "16:9": (edge, edge * 9 // 16),
+        "9:16": (edge * 9 // 16, edge),
+    }
+    width, height = ratio_dimensions.get(params.get("ratio"), (edge, edge))
     body = {
         "model": profile.upstream_model,
         "prompt": generation.original_prompt,
-        "size": ratio_sizes.get(params.get("ratio"), "2048x2048"),
+        "size": f"{width}x{height}",
         "n": 1,
         "response_format": "b64_json",
         "watermark": False,

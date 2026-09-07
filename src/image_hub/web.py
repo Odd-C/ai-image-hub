@@ -104,6 +104,7 @@ async def create_generation(
     prompt: str = Form(..., min_length=1, max_length=12000),
     profile_id: str = Form(...),
     ratio: str = Form("1:1"),
+    resolution: str = Form("2K"),
     quality: str = Form("standard"),
     parent_generation_id: str = Form(""),
     idempotency_key: str = Form(..., min_length=16, max_length=64),
@@ -123,7 +124,11 @@ async def create_generation(
     profile = get_profile(profile_id)
     if profile is None or not profile.enabled:
         raise HTTPException(503, "平台或模型尚未启用")
-    if ratio not in profile.ratios or quality not in profile.qualities:
+    if (
+        ratio not in profile.ratios
+        or resolution not in profile.resolutions
+        or quality not in profile.qualities
+    ):
         raise HTTPException(422, "模型参数无效")
     if len(references) > profile.max_references:
         raise HTTPException(422, f"该模型参考图最多 {profile.max_references} 张")
@@ -153,7 +158,10 @@ async def create_generation(
         model_id=profile.id.split(":", 1)[1],
         model_label=profile.label,
         provider_snapshot_json=json.dumps(profile.public_dict(), ensure_ascii=False),
-        parameters_json=json.dumps({"ratio": ratio, "quality": quality}, ensure_ascii=False),
+        parameters_json=json.dumps(
+            {"ratio": ratio, "resolution": resolution, "quality": quality},
+            ensure_ascii=False,
+        ),
         parent_generation_id=parent_generation_id,
         status="queued",
     )

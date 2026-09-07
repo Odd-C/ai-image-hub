@@ -4,6 +4,7 @@ const labels = {libtv: 'LibTV', lovart: 'Lovart', api: 'API', queued: '排队中
 const sentimentLabels = {satisfied: '满意', adopted: '采用', dissatisfied: '不满意'};
 let historyItems = [];
 let refreshTimer = null;
+let selectedReferenceFiles = [];
 const csrfHeaders = {'X-CSRF-Token': window.IMAGE_HUB_CSRF || ''};
 
 function newIdempotencyKey() {
@@ -43,12 +44,14 @@ function renderCapabilities() {
   const profile = models.find(item => item.id === $('#profile-select').value);
   if (!profile) {
     $('#ratio-select').innerHTML = '';
+    $('#resolution-select').innerHTML = '';
     $('#quality-select').innerHTML = '';
     $('#generate-button').disabled = true;
     $('#availability-note').textContent = '该平台没有可用模型';
     return;
   }
   $('#ratio-select').innerHTML = profile.ratios.map(value => `<option>${value}</option>`).join('');
+  $('#resolution-select').innerHTML = profile.resolutions.map(value => `<option>${value}</option>`).join('');
   $('#quality-select').innerHTML = profile.qualities.map(value => `<option>${value}</option>`).join('');
   $('#generate-button').disabled = !profile.enabled;
   $('#availability-note').textContent = profile.enabled ? `${labels[profile.provider]} · ${profile.label}` : '管理员尚未配置此模型';
@@ -60,20 +63,38 @@ function initModelControls() {
   renderModelOptions();
 }
 
-function renderPreviews() {
-  const files = [...$('#references').files];
-  if (files.length > 14) {
-    $('#references').value = '';
-    toast('参考图最多 14 张', true);
-    return;
+function referenceKey(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function syncReferenceInput() {
+  const transfer = new DataTransfer();
+  selectedReferenceFiles.forEach(file => transfer.items.add(file));
+  $('#references').files = transfer.files;
+  $('#reference-preview').innerHTML = selectedReferenceFiles.map((file, index) => `<figure><img src="${URL.createObjectURL(file)}"><figcaption>${index + 1}<span>${escapeHtml(file.name)}</span></figcaption><button type="button" class="remove-reference" data-remove-reference="${index}" aria-label="移除 ${escapeHtml(file.name)}">×</button></figure>`).join('');
+}
+
+function addReferenceFiles(files) {
+  const profile = models.find(item => item.id === $('#profile-select').value);
+  const limit = profile?.max_references || 14;
+  const known = new Set(selectedReferenceFiles.map(referenceKey));
+  for (const file of files) {
+    if (!known.has(referenceKey(file))) {
+      selectedReferenceFiles.push(file);
+      known.add(referenceKey(file));
+    }
   }
-  $('#reference-preview').innerHTML = files.map((file, index) => `<figure><img src="${URL.createObjectURL(file)}"><figcaption>${index + 1}<span>${escapeHtml(file.name)}</span></figcaption></figure>`).join('');
+  if (selectedReferenceFiles.length > limit) {
+    selectedReferenceFiles = selectedReferenceFiles.slice(0, limit);
+    toast(`该模型参考图最多 ${limit} 张`, true);
+  }
+  syncReferenceInput();
 }
 
 function resultCard(item, compact = false) {
   const date = new Date(item.created_at).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
   const media = item.artifact_url ? `<a class="result-image" href="${item.artifact_url}" target="_blank"><img src="${item.artifact_url}" loading="lazy" alt="生成结果"></a>` : `<div class="result-placeholder ${item.status}"><span>${item.status === 'running' ? '◌' : item.status === 'failed' ? '!' : '…'}</span><b>${labels[item.status] || item.status}</b></div>`;
-  const sentiments = item.status === 'succeeded' ? `<div class="sentiment-row">${Object.entries(sentimentLabels).map(([key, value]) => `<button data-action="sentiment" data-id="${item.id}" data-value="${key}" class="sentiment ${item.sentiment === key ? 'active' : ''}">${value}</button>`).join('')}</div>` : '';
+  const sentiments = !compact && item.status === 'succeeded' ? `<div class="sentiment-row">${Object.entries(sentimentLabels).map(([key, value]) => `<button data-action="sentiment" data-id="${item.id}" data-value="${key}" class="sentiment ${item.sentiment === key ? 'active' : ''}">${value}</button>`).join('')}</div>` : '';
   const references = item.references.length ? `<div class="history-references">${item.references.slice(0, 4).map(ref => `<img src="/generations/${item.id}/references/${ref.id}" loading="lazy" title="参考图 ${ref.position}">`).join('')}<small>${item.references.length} 张参考图</small></div>` : '';
   return `<article class="result-card ${compact ? 'compact' : ''}" data-id="${item.id}">${media}<div class="result-content"><div class="result-meta"><span>${labels[item.provider] || item.provider} · ${escapeHtml(item.model_label)}</span><time>${date}</time></div><p>${escapeHtml(item.prompt)}</p>${references}${item.error ? `<small class="error-text">${escapeHtml(item.error)}</small>` : ''}<div class="card-actions"><button data-action="reuse" data-id="${item.id}" class="secondary">再次使用</button>${item.artifact_url ? `<a href="${item.artifact_url}?download=true" class="secondary">下载</a>` : ''}${item.can_retry ? `<button data-action="retry" data-id="${item.id}" class="secondary">安全重试</button>` : ''}</div>${sentiments}</div></article>`;
 }
@@ -98,6 +119,7 @@ function reuseItem(item) {
   $('#provider-select').value = item.provider;
   renderModelOptions(`${item.provider}:${item.model_id}`);
   if ([...$('#ratio-select').options].some(option => option.value === item.parameters.ratio)) $('#ratio-select').value = item.parameters.ratio;
+  if ([...$('#resolution-select').options].some(option => option.value === item.parameters.resolution)) $('#resolution-select').value = item.parameters.resolution;
   if ([...$('#quality-select').options].some(option => option.value === item.parameters.quality)) $('#quality-select').value = item.parameters.quality;
   switchView('create');
   $('#prompt').focus();
@@ -139,7 +161,16 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#provider-select').addEventListener('change', () => renderModelOptions());
   $('#profile-select').addEventListener('change', renderCapabilities);
   $('#prompt').addEventListener('input', event => $('#prompt-count').textContent = event.target.value.length);
-  $('#references').addEventListener('change', renderPreviews);
+  $('#references').addEventListener('change', event => addReferenceFiles([...event.target.files]));
+  $('#dropzone').addEventListener('dragover', event => { event.preventDefault(); $('#dropzone').classList.add('dragging'); });
+  $('#dropzone').addEventListener('dragleave', () => $('#dropzone').classList.remove('dragging'));
+  $('#dropzone').addEventListener('drop', event => { event.preventDefault(); $('#dropzone').classList.remove('dragging'); addReferenceFiles([...event.dataTransfer.files]); });
+  $('#reference-preview').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-reference]');
+    if (!button) return;
+    selectedReferenceFiles.splice(Number(button.dataset.removeReference), 1);
+    syncReferenceInput();
+  });
   document.querySelectorAll('.nav-tab').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
   document.body.addEventListener('click', handleAction);
   $('#refresh-button').addEventListener('click', loadHistory);
@@ -153,8 +184,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const result = await responseJson(await fetch('/api/generations', {method: 'POST', headers: csrfHeaders, body: new FormData(event.target)}));
       toast(`任务 ${result.id.slice(0, 8)} 已进入队列`);
       event.target.reset();
+      selectedReferenceFiles = [];
       $('#prompt-count').textContent = '0';
-      $('#reference-preview').innerHTML = '';
+      syncReferenceInput();
       $('#parent-id').value = '';
       newIdempotencyKey();
       initModelControls();

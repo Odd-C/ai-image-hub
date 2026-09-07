@@ -2,3 +2,26 @@
 @media(max-width:1100px){#create-view{grid-template-columns:1fr}.recent-panel{min-height:0}.history-grid{grid-template-columns:repeat(3,1fr)}.settings-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.topbar{padding:0 16px;grid-template-columns:1fr auto}.topbar nav{order:3;grid-column:1/-1;justify-content:center;height:45px}.topbar{height:auto;min-height:70px}.account>span:not(.status-dot){display:none}.app-shell{padding:18px 14px}.composer,.recent-panel{padding:20px}.section-heading,.history-header{display:block}.section-heading h1,.history-header h1{font-size:31px}.history-grid{grid-template-columns:1fr 1fr}.filters{flex-wrap:wrap}.filters input{width:100%}.admin-grid{grid-template-columns:1fr}.admin-card.wide,.admin-card.full{grid-column:auto}.model-status-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:480px){.history-grid,.settings-grid,.stats-row,.model-status-grid{grid-template-columns:1fr}.result-card.compact{grid-template-columns:100px 1fr}.submit-row{align-items:flex-end;gap:15px}.generate{min-width:150px}.brand em{display:none}}
+
+/* Recent tasks are a compact queue, not full history cards. */
+@media(min-width:1101px){#create-view{grid-template-columns:minmax(580px,1fr) 430px}.recent-panel{position:sticky;top:100px;height:calc(100vh - 128px);min-height:560px;overflow:hidden;display:flex;flex-direction:column}.recent-panel .result-list{min-height:0;overflow-y:auto;padding-right:5px;margin-right:-7px}.recent-panel .result-list::-webkit-scrollbar{width:6px}.recent-panel .result-list::-webkit-scrollbar-thumb{background:#d3d3ca;border-radius:9px}}
+.recent-panel .result-card.compact{grid-template-columns:96px minmax(0,1fr);min-height:132px}
+.recent-panel .compact .result-image,.recent-panel .compact .result-placeholder{width:96px;min-height:132px;height:100%;aspect-ratio:auto}
+.recent-panel .compact .result-content{min-width:0;padding:12px 13px;display:flex;flex-direction:column}
+.recent-panel .compact .result-meta{min-width:0}.recent-panel .compact .result-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recent-panel .compact .result-content p{-webkit-line-clamp:2;font-size:13px;line-height:1.48;margin:7px 0}
+.recent-panel .compact .card-actions{margin-top:auto}.recent-panel .compact .secondary{padding:5px 8px}
+.recent-panel .compact .sentiment-row{margin-top:7px;gap:4px}.recent-panel .compact .sentiment{padding:4px 7px;font-size:11px}
+@media(max-width:1100px){.recent-panel .result-card.compact{grid-template-columns:112px minmax(0,1fr)}.recent-panel .compact .result-image,.recent-panel .compact .result-placeholder{width:112px}}
+@media(max-width:480px){.recent-panel .result-card.compact{grid-template-columns:82px minmax(0,1fr)}.recent-panel .compact .result-image,.recent-panel .compact .result-placeholder{width:82px}.recent-panel .compact .sentiment-row{display:none}}
+
+/* Show the whole recent queue in normal page flow. */
+@media(min-width:1101px){.recent-panel{position:static;height:auto;min-height:720px;overflow:visible;align-self:start}.recent-panel .result-list{overflow:visible;padding-right:0;margin-right:0}}
+.recent-panel .result-card.compact{grid-template-columns:88px minmax(0,1fr);min-height:108px}
+.recent-panel .compact .result-image,.recent-panel .compact .result-placeholder{width:88px;min-height:108px}
+
+.settings-grid{grid-template-columns:1.05fr 1.45fr repeat(3,.8fr)}
+@media(max-width:1100px){.settings-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:480px){.settings-grid{grid-template-columns:1fr}}
+
+.dropzone.dragging{border-color:var(--ink);background:#f1f4df}.reference-preview figure{position:relative}.remove-reference{position:absolute;right:-5px;top:-5px;width:22px;height:22px;border:0;border-radius:50%;background:#171713;color:#fff;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)}

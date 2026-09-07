@@ -20,14 +20,15 @@
         <label class="prompt-field"><span>提示词</span><textarea name="prompt" id="prompt" maxlength="12000" required placeholder="描述你想生成的画面……"></textarea><small><b id="prompt-count">0</b> / 12000</small></label>
         <div class="reference-block">
           <div><strong>参考图片</strong><span>可选，最多 14 张；提交顺序会被记录</span></div>
-          <label class="dropzone" id="dropzone"><input type="file" name="references" id="references" accept="image/png,image/jpeg,image/webp" multiple><span class="plus">＋</span><b>点击或拖入参考图</b><small>PNG / JPEG / WebP，单张不超过 30 MB</small></label>
+          <label class="dropzone" id="dropzone"><input type="file" name="references" id="references" accept="image/png,image/jpeg,image/webp" multiple><span class="plus">＋</span><b>点击或拖入参考图</b><small>可分多次追加选择 · PNG / JPEG / WebP</small></label>
           <div id="reference-preview" class="reference-preview"></div>
         </div>
         <div class="settings-grid">
           <label>平台<select id="provider-select"></select></label>
           <label>模型<select name="profile_id" id="profile-select"></select></label>
           <label>画面比例<select name="ratio" id="ratio-select"></select></label>
-          <label>质量<select name="quality" id="quality-select"></select></label>
+          <label>分辨率<select name="resolution" id="resolution-select"></select></label>
+          <label>质量档位<select name="quality" id="quality-select"></select></label>
         </div>
         <div class="submit-row"><span id="availability-note"></span><button class="primary generate" id="generate-button">开始生成 <span>→</span></button></div>
       </form>
