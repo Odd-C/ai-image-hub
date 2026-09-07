@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/image-hub.db"
     storage_root: Path = Path("storage")
     max_upload_bytes: int = 30 * 1024 * 1024
+    max_request_upload_bytes: int = 80 * 1024 * 1024
+    max_artifact_bytes: int = 40 * 1024 * 1024
     max_active_tasks_per_user: int = 5
     session_secret: str = "development-only-change-me"
     bootstrap_admin_username: str = "admin"
@@ -27,6 +29,7 @@ class Settings(BaseSettings):
     worker_enabled: bool = True
     worker_poll_seconds: float = 1.0
     worker_stale_minutes: int = 60
+    provider_command_timeout_seconds: int = 900
 
     @property
     def package_dir(self) -> Path:

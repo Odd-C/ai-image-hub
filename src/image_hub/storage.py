@@ -23,6 +23,7 @@ class StoredImage:
     mime_type: str
     width: int
     height: int
+    byte_size: int
 
 
 async def store_reference(generation_id: str, reference_id: str, upload: UploadFile) -> StoredImage:
@@ -51,7 +52,23 @@ async def store_reference(generation_id: str, reference_id: str, upload: UploadF
         mime_type={"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image_format],
         width=width,
         height=height,
+        byte_size=len(payload),
     )
+
+
+def validate_artifact(path: Path) -> None:
+    if not path.is_file() or path.stat().st_size > settings.max_artifact_bytes:
+        raise InvalidImage("上游结果不存在或超过文件大小限制")
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            image_format = image.format or ""
+            width, height = image.size
+    except (UnidentifiedImageError, OSError) as exc:
+        raise InvalidImage("上游返回的结果不是有效图片") from exc
+    if image_format not in ALLOWED_FORMATS or width * height > MAX_IMAGE_PIXELS:
+        raise InvalidImage("上游结果格式或像素总量不符合限制")
 
 
 def resolve_storage_key(storage_key: str) -> Path:

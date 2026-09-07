@@ -18,8 +18,8 @@ from image_hub.auth import (
 )
 from image_hub.config import settings
 from image_hub.db import get_session
-from image_hub.models import Generation, ReferenceImage, User, new_id
-from image_hub.providers import get_profile, model_profiles
+from image_hub.models import Generation, ReferenceImage, User, new_id, utcnow
+from image_hub.providers import get_profile, model_profiles, recover_generation
 from image_hub.storage import InvalidImage, resolve_storage_key, store_reference
 from image_hub.worker import generation_worker
 
@@ -125,8 +125,8 @@ async def create_generation(
         raise HTTPException(503, "平台或模型尚未启用")
     if ratio not in profile.ratios or quality not in profile.qualities:
         raise HTTPException(422, "模型参数无效")
-    if len(references) > 14:
-        raise HTTPException(422, "参考图最多 14 张")
+    if len(references) > profile.max_references:
+        raise HTTPException(422, f"该模型参考图最多 {profile.max_references} 张")
     active_count = session.scalar(
         select(func.count()).select_from(Generation).where(
             Generation.user_id == user.id,
@@ -160,10 +160,14 @@ async def create_generation(
     session.add(generation)
     session.flush()
     manifest = []
+    total_upload_bytes = 0
     try:
         for position, upload in enumerate([item for item in references if item.filename], 1):
             reference_id = new_id()
             stored = await store_reference(generation.id, reference_id, upload)
+            total_upload_bytes += stored.byte_size
+            if total_upload_bytes > settings.max_request_upload_bytes:
+                raise InvalidImage("本次参考图总大小超过限制")
             reference = ReferenceImage(
                 id=reference_id,
                 generation_id=generation.id,
@@ -178,7 +182,8 @@ async def create_generation(
             session.add(reference)
             manifest.append(
                 {"id": reference_id, "position": position, "name": reference.original_name,
-                 "sha256": stored.sha256, "width": stored.width, "height": stored.height}
+                 "sha256": stored.sha256, "width": stored.width, "height": stored.height,
+                 "byte_size": stored.byte_size}
             )
     except InvalidImage as exc:
         session.rollback()
@@ -224,6 +229,8 @@ def list_generations(
                 "error": item.error_message,
                 "created_at": item.created_at.isoformat(),
                 "artifact_url": f"/generations/{item.id}/artifact" if item.artifact_storage_key else "",
+                "can_retry": item.status in {"failed", "recovery_required"}
+                and not item.external_project_id and not item.external_task_id,
             }
             for item in generations
         ]
@@ -309,6 +316,12 @@ def admin_page(request: Request, session: Session = Depends(get_session)):
         return RedirectResponse("/login", status_code=303)
     require_admin(user)
     users = session.scalars(select(User).order_by(User.created_at)).all()
+    recovery_tasks = session.scalars(
+        select(Generation)
+        .where(Generation.status == "recovery_required")
+        .order_by(Generation.created_at.desc())
+        .limit(50)
+    ).all()
     counts = {
         row[0]: row[1]
         for row in session.execute(
@@ -319,7 +332,8 @@ def admin_page(request: Request, session: Session = Depends(get_session)):
         request,
         "admin.html",
         {"user": user, "users": users, "counts": counts,
-         "profiles": model_profiles(), "csrf_token": csrf_token(request)},
+         "profiles": model_profiles(), "csrf_token": csrf_token(request),
+         "recovery_tasks": recovery_tasks},
     )
 
 
@@ -370,3 +384,43 @@ def toggle_user(
 def health(session: Session = Depends(get_session)):
     queued = session.scalar(select(Generation).where(or_(Generation.status == "queued", Generation.status == "running")).limit(1))
     return {"status": "ok", "service": "ai-image-hub", "worker_backlog": bool(queued)}
+
+
+@router.post("/admin/generations/{generation_id}/recover")
+def recover_generation_admin(
+    generation_id: str,
+    request: Request,
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
+    admin = current_user(request, session)
+    require_admin(admin)
+    generation = session.get(Generation, generation_id)
+    if not generation:
+        raise HTTPException(404, "任务不存在")
+    try:
+        recover_generation(generation.id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/generations/{generation_id}/resolve-failed")
+def resolve_generation_failed(
+    generation_id: str,
+    request: Request,
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
+    admin = current_user(request, session)
+    require_admin(admin)
+    generation = session.get(Generation, generation_id)
+    if not generation or generation.status != "recovery_required":
+        raise HTTPException(409, "任务不处于待恢复状态")
+    generation.status = "failed"
+    generation.error_message = "管理员已核对上游并将任务收敛为失败。"
+    generation.finished_at = utcnow()
+    session.commit()
+    return RedirectResponse("/admin", status_code=303)

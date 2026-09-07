@@ -33,3 +33,20 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
 app.include_router(router)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' blob: data:; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; "
+        "form-action 'self'"
+    )
+    if settings.env == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response

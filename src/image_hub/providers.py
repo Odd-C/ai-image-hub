@@ -11,7 +11,7 @@ from sqlalchemy.orm import object_session
 
 from image_hub.config import settings
 from image_hub.models import Generation, utcnow
-from image_hub.storage import resolve_storage_key
+from image_hub.storage import InvalidImage, resolve_storage_key, validate_artifact
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,7 @@ class ModelProfile:
     supports_references: bool = True
     ratios: tuple[str, ...] = ("1:1", "4:3", "3:4", "16:9", "9:16")
     qualities: tuple[str, ...] = ("standard",)
+    max_references: int = 14
 
     def public_dict(self) -> dict:
         return asdict(self)
@@ -80,6 +81,7 @@ def model_profiles() -> tuple[ModelProfile, ...]:
                 ModelProfile(
                     id=f"api:{model_id}", label=label or model_id, provider="api",
                     upstream_model=model_id, enabled=bool(settings.openai_image_api_key),
+                    max_references=4,
                 )
             )
     return tuple(profiles)
@@ -110,9 +112,13 @@ def _checkpoint(generation: Generation) -> None:
 
 
 def _run_libtv(*args: str) -> dict:
-    result = subprocess.run(
-        [str(settings.libtv_cli), *args], capture_output=True, text=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            [str(settings.libtv_cli), *args], capture_output=True, text=True, check=False,
+            timeout=settings.provider_command_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("LibTV 命令执行超时") from exc
     if result.returncode:
         raise RuntimeError((result.stderr.strip() or result.stdout.strip() or "LibTV 执行失败")[-2000:])
     for line in reversed(result.stdout.splitlines()):
@@ -157,14 +163,24 @@ def _execute_libtv(generation: Generation, profile: ModelProfile) -> None:
     _checkpoint(generation)
     output_dir = settings.storage_root / f"generations/{generation.id}/results"
     output_dir.mkdir(parents=True, exist_ok=True)
-    download = subprocess.run(
-        [str(settings.libtv_cli), "download", "--project", project_id, "--node", output_node,
-         "--out", str(output_dir), "--without-ai-watermark", "--vip"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        download = subprocess.run(
+            [str(settings.libtv_cli), "download", "--project", project_id, "--node", output_node,
+             "--out", str(output_dir), "--without-ai-watermark", "--vip"],
+            capture_output=True, text=True, check=False,
+            timeout=settings.provider_command_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("LibTV 下载超时") from exc
     if download.returncode:
         raise RuntimeError((download.stderr.strip() or download.stdout.strip() or "LibTV 下载失败")[-2000:])
-    files = [path for path in output_dir.iterdir() if path.is_file()]
+    files = []
+    for path in output_dir.iterdir():
+        try:
+            validate_artifact(path)
+            files.append(path)
+        except InvalidImage:
+            continue
     if not files:
         raise RuntimeError("LibTV 未下载到图片")
     generation.artifact_storage_key = str(max(files, key=lambda path: path.stat().st_mtime).relative_to(settings.storage_root))
@@ -177,10 +193,13 @@ def _run_lovart(*args: str) -> dict:
         LOVART_SECRET_KEY=settings.lovart_secret_key,
         LOVART_BASE_URL=settings.lovart_base_url,
     )
-    result = subprocess.run(
-        ["python3", str(settings.lovart_skill_script), *args], capture_output=True,
-        text=True, check=False, env=env,
-    )
+    try:
+        result = subprocess.run(
+            ["python3", str(settings.lovart_skill_script), *args], capture_output=True,
+            text=True, check=False, env=env, timeout=settings.provider_command_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Lovart 命令执行超时") from exc
     if result.returncode:
         raise RuntimeError((result.stderr.strip() or result.stdout.strip() or "Lovart 执行失败")[-2000:])
     return json.loads(result.stdout)
@@ -220,6 +239,7 @@ def _execute_lovart(generation: Generation, profile: ModelProfile) -> None:
     target = output_dir / f"result{source.suffix or '.png'}"
     if source.resolve() != target.resolve():
         shutil.copy2(source, target)
+    validate_artifact(target)
     generation.artifact_storage_key = str(target.relative_to(settings.storage_root))
 
 
@@ -257,14 +277,20 @@ def _execute_api(generation: Generation, profile: ModelProfile) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / "result.png"
     if image.get("b64_json"):
-        target.write_bytes(base64.b64decode(image["b64_json"]))
+        payload = base64.b64decode(image["b64_json"])
+        if len(payload) > settings.max_artifact_bytes:
+            raise RuntimeError("图像 API 返回文件超过大小限制")
+        target.write_bytes(payload)
     elif image.get("url"):
         with httpx.Client(timeout=120) as client:
             download = client.get(image["url"])
             download.raise_for_status()
+            if len(download.content) > settings.max_artifact_bytes:
+                raise RuntimeError("图像 API 返回文件超过大小限制")
             target.write_bytes(download.content)
     else:
         raise RuntimeError("图像 API 未返回图片")
+    validate_artifact(target)
     generation.artifact_storage_key = str(target.relative_to(settings.storage_root))
 
 
@@ -287,10 +313,98 @@ def execute_generation(generation_id: str) -> None:
             {"libtv": _execute_libtv, "lovart": _execute_lovart, "api": _execute_api}[profile.provider](generation, profile)
             generation.status = "succeeded"
         except Exception as exc:  # noqa: BLE001
-            generation.status = "failed"
+            generation.status = (
+                "recovery_required"
+                if generation.external_project_id or generation.external_task_id
+                else "failed"
+            )
             generation.error_message = str(exc)[-2000:]
         finally:
             generation.finished_at = utcnow()
             generation.lease_owner = ""
             generation.lease_expires_at = None
             session.commit()
+
+
+def recover_generation(generation_id: str) -> tuple[bool, str]:
+    from image_hub.db import SessionLocal
+
+    with SessionLocal() as session:
+        generation = session.get(Generation, generation_id)
+        if not generation or generation.status != "recovery_required":
+            raise RuntimeError("任务不处于待恢复状态")
+        output_dir = settings.storage_root / f"generations/{generation.id}/results"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if generation.provider == "libtv":
+            if not generation.external_project_id:
+                raise RuntimeError("LibTV 任务缺少外部 Project ID")
+            output_node = f"结果-{generation.id[:8]}"
+            result = _run_libtv("node", output_node, "--project", generation.external_project_id)
+            data = result.get("data", {}) if isinstance(result, dict) else {}
+            urls = data.get("url", []) if isinstance(data, dict) else []
+            task_info = data.get("taskInfo", {}) if isinstance(data, dict) else {}
+            if not urls:
+                status_value = task_info.get("status", "unknown")
+                progress = task_info.get("progressPercent", 0)
+                message = f"LibTV 上游状态 {status_value}，进度 {progress}%，暂未产生结果。"
+                generation.error_message = message
+                session.commit()
+                return False, message
+            _execute_libtv_download(generation, output_node, output_dir)
+        elif generation.provider == "lovart":
+            if not generation.external_task_id:
+                raise RuntimeError("Lovart 任务缺少外部 Thread ID")
+            result = _run_lovart(
+                "result", "--thread-id", generation.external_task_id, "--json", "--download",
+                "--output-dir", str(output_dir),
+            )
+            downloaded = [
+                item for item in result.get("downloaded", [])
+                if item.get("type") == "image" and item.get("local_path")
+            ]
+            if not downloaded:
+                generation.error_message = "Lovart 上游暂未返回可下载图片。"
+                session.commit()
+                return False, generation.error_message
+            source = Path(downloaded[0]["local_path"])
+            target = output_dir / f"result{source.suffix or '.png'}"
+            if source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+            validate_artifact(target)
+            generation.artifact_storage_key = str(target.relative_to(settings.storage_root))
+        else:
+            raise RuntimeError("该 API 为同步接口，没有可查询的外部恢复任务")
+        generation.status = "succeeded"
+        generation.error_message = ""
+        generation.finished_at = utcnow()
+        generation.lease_owner = ""
+        generation.lease_expires_at = None
+        session.commit()
+        return True, "已从上游恢复生成结果"
+
+
+def _execute_libtv_download(
+    generation: Generation, output_node: str, output_dir: Path
+) -> None:
+    try:
+        download = subprocess.run(
+            [str(settings.libtv_cli), "download", "--project", generation.external_project_id,
+             "--node", output_node, "--out", str(output_dir), "--without-ai-watermark", "--vip"],
+            capture_output=True, text=True, check=False,
+            timeout=settings.provider_command_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("LibTV 恢复下载超时") from exc
+    if download.returncode:
+        raise RuntimeError((download.stderr.strip() or download.stdout.strip() or "LibTV 恢复下载失败")[-2000:])
+    files = []
+    for path in output_dir.iterdir():
+        try:
+            validate_artifact(path)
+            files.append(path)
+        except InvalidImage:
+            continue
+    if not files:
+        raise RuntimeError("LibTV 上游有结果，但未下载到有效图片")
+    artifact = max(files, key=lambda path: path.stat().st_mtime)
+    generation.artifact_storage_key = str(artifact.relative_to(settings.storage_root))

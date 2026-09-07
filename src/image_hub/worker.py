@@ -39,10 +39,40 @@ class GenerationWorker:
         while not self._stop.is_set():
             generation_id = self.claim_next()
             if generation_id:
-                execute_generation(generation_id)
+                heartbeat_stop = threading.Event()
+                heartbeat = threading.Thread(
+                    target=self._heartbeat,
+                    args=(generation_id, heartbeat_stop),
+                    name=f"image-hub-heartbeat-{generation_id[:8]}",
+                    daemon=True,
+                )
+                heartbeat.start()
+                try:
+                    execute_generation(generation_id)
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat.join(timeout=2)
                 continue
             self._wake.wait(settings.worker_poll_seconds)
             self._wake.clear()
+
+    def _heartbeat(self, generation_id: str, stop: threading.Event) -> None:
+        interval = max(10.0, settings.worker_stale_minutes * 20.0)
+        while not stop.wait(interval):
+            now = utcnow()
+            with SessionLocal() as session:
+                session.execute(
+                    update(Generation)
+                    .where(
+                        Generation.id == generation_id,
+                        Generation.status == "running",
+                        Generation.lease_owner == self.worker_id,
+                    )
+                    .values(
+                        lease_expires_at=now + timedelta(minutes=settings.worker_stale_minutes)
+                    )
+                )
+                session.commit()
 
     def claim_next(self) -> str | None:
         now = utcnow()

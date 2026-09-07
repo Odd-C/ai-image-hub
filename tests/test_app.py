@@ -1,3 +1,4 @@
+import json
 import re
 
 from fastapi.testclient import TestClient
@@ -5,7 +6,7 @@ from fastapi.testclient import TestClient
 from image_hub.app import app
 from image_hub.db import SessionLocal
 from image_hub.models import Generation, User
-from image_hub.providers import ModelProfile
+from image_hub.providers import ModelProfile, execute_generation
 
 
 def login(client: TestClient) -> str:
@@ -113,3 +114,44 @@ def test_generation_submission_is_idempotent(monkeypatch):
         second = client.post("/api/generations", data=payload, headers={"X-CSRF-Token": token})
         assert first.status_code == second.status_code == 202
         assert first.json()["id"] == second.json()["id"]
+
+
+def test_external_failure_requires_recovery(monkeypatch):
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+    )
+
+    def fail_after_submission(generation, _profile):
+        generation.external_task_id = "paid-upstream-task"
+        raise RuntimeError("download interrupted")
+
+    monkeypatch.setattr("image_hub.providers._execute_api", fail_after_submission)
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        generation = Generation(
+            user_id=admin.id,
+            idempotency_key="recovery-test-key",
+            original_prompt="恢复测试",
+            provider="api",
+            model_id="test-image",
+            model_label="Test Image",
+            provider_snapshot_json=json.dumps(profile.public_dict()),
+            status="running",
+        )
+        session.add(generation)
+        session.commit()
+        generation_id = generation.id
+    execute_generation(generation_id)
+    with SessionLocal() as session:
+        generation = session.get(Generation, generation_id)
+        assert generation.status == "recovery_required"
+        assert generation.external_task_id == "paid-upstream-task"
+
+
+def test_security_headers_are_present():
+    with TestClient(app) as client:
+        response = client.get("/login")
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert "default-src 'self'" in response.headers["content-security-policy"]
