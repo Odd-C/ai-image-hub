@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AI Image Hub · 无限画布演示</title>
-  <link rel="stylesheet" href="demo.css?v=canvas-4">
+  <link rel="stylesheet" href="demo.css?v=canvas-5">
 </head>
 <body>
   <header class="topbar">
@@ -46,10 +46,16 @@
       </div>
 
       <aside class="generation-dock">
-        <div class="dock-heading"><span class="eyebrow">GENERATE</span><h1>图像生成</h1><p>选择画布图片作为参考，再生成新版本。</p></div>
-        <div class="selected-assets"><div><strong>参考素材</strong><span id="selected-count">0 张已选</span></div><div id="selected-assets-list" class="selected-assets-list"><p>在画布中选择一张或多张图片</p></div></div>
+        <div class="dock-heading"><span class="eyebrow" id="dock-mode-label">GENERATE</span><h1 id="dock-title">图像生成</h1><p id="dock-description">选择参考素材，再生成新版本。</p></div>
+        <div class="inspection-banner" id="inspection-banner"><span>正在检查已有生成结果</span><button type="button" id="exit-inspection">返回原草稿</button></div>
+        <div class="selected-assets">
+          <div class="selected-assets-head"><strong>参考素材</strong><span id="selected-count">0 张已选</span></div>
+          <button type="button" class="reference-picker-button" id="reference-picker-button">＋ 选择参考图</button>
+          <small class="reference-picker-help" id="reference-picker-help">进入选择模式后，按 Shift＋左键选择画布图片</small>
+          <div id="selected-assets-list" class="selected-assets-list"><p>尚未选择参考素材</p></div>
+        </div>
         <form id="generation-form">
-          <label class="dock-prompt"><span>提示词</span><textarea id="prompt" maxlength="12000" required>基于参考产品，生成现代极简风格的香水主视觉。透明玻璃瓶置于浅灰色石材台面，柔和自然光和细腻阴影，高级商业摄影质感。</textarea><small><b id="prompt-count">65</b> / 12000</small></label>
+          <div class="dock-prompt"><div class="prompt-heading"><b id="prompt-title">提示词</b><i><button type="button" id="copy-prompt">复制</button><button type="button" id="prompt-to-note" draggable="true">拖到画布 / 变备注</button></i></div><textarea id="prompt" aria-label="提示词" maxlength="12000" required>基于参考产品，生成现代极简风格的香水主视觉。透明玻璃瓶置于浅灰色石材台面，柔和自然光和细腻阴影，高级商业摄影质感。</textarea><small><b id="prompt-count">65</b> / 12000</small></div>
           <div class="dock-settings">
             <label>平台<select id="provider-select"><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select></label>
             <label>模型<select id="model-select"></select></label>
@@ -81,6 +87,6 @@
     <div class="lightbox-stage"><button type="button" class="lightbox-nav previous" data-lightbox-action="previous">‹</button><div class="lightbox-canvas"><div id="lightbox-art" class="lightbox-art"></div></div><button type="button" class="lightbox-nav next" data-lightbox-action="next">›</button></div>
     <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
   </dialog>
-  <script src="demo.js?v=canvas-4"></script>
+  <script src="demo.js?v=canvas-5"></script>
 </body>
 </html>
