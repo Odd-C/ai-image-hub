@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>AI Image Hub · 前端演示</title>
-  <link rel="stylesheet" href="demo.css?v=4">
+  <link rel="stylesheet" href="demo.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -53,7 +53,7 @@
       </div>
 
       <aside class="recent-panel panel">
-        <div class="panel-heading"><div><span class="eyebrow">LIVE QUEUE</span><h2>最近任务</h2></div><button class="icon-button" id="refresh-button">↻</button></div>
+        <div class="panel-heading"><div><span class="eyebrow">VISUAL REVIEW</span><h2>最近任务</h2><p>点击图片可进入全屏审图</p></div><button class="icon-button" id="refresh-button">↻</button></div>
         <div id="recent-list" class="result-list"></div>
       </aside>
     </section>
@@ -79,6 +79,11 @@
   </main>
 
   <div class="toast" id="toast"></div>
-  <script src="demo.js?v=4"></script>
+  <dialog class="lightbox" id="lightbox" aria-label="图片审图">
+    <div class="lightbox-bar"><div><strong id="lightbox-title">生成结果</strong><span id="lightbox-counter"></span></div><div class="lightbox-tools"><button type="button" data-lightbox-action="zoom-out">−</button><button type="button" data-lightbox-action="reset" id="lightbox-zoom">100%</button><button type="button" data-lightbox-action="zoom-in">＋</button><button type="button" data-lightbox-action="download">下载</button><button type="button" data-lightbox-action="close">×</button></div></div>
+    <div class="lightbox-stage"><button type="button" class="lightbox-nav previous" data-lightbox-action="previous">‹</button><div class="lightbox-canvas"><span id="lightbox-art" class="generated-art"></span></div><button type="button" class="lightbox-nav next" data-lightbox-action="next">›</button></div>
+    <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
+  </dialog>
+  <script src="demo.js?v=5"></script>
 </body>
 </html>

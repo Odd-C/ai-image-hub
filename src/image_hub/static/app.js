@@ -5,6 +5,9 @@ const sentimentLabels = {satisfied: '满意', adopted: '采用', dissatisfied: '
 let historyItems = [];
 let refreshTimer = null;
 let selectedReferenceFiles = [];
+let lightboxItems = [];
+let lightboxIndex = 0;
+let lightboxScale = 1;
 const csrfHeaders = {'X-CSRF-Token': window.IMAGE_HUB_CSRF || ''};
 
 function newIdempotencyKey() {
@@ -93,10 +96,55 @@ function addReferenceFiles(files) {
 
 function resultCard(item, compact = false) {
   const date = new Date(item.created_at).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
-  const media = item.artifact_url ? `<a class="result-image" href="${item.artifact_url}" target="_blank"><img src="${item.artifact_url}" loading="lazy" alt="生成结果"></a>` : `<div class="result-placeholder ${item.status}"><span>${item.status === 'running' ? '◌' : item.status === 'failed' ? '!' : '…'}</span><b>${labels[item.status] || item.status}</b></div>`;
+  const media = item.artifact_url ? `<button type="button" class="result-image image-review-trigger" data-action="preview" data-id="${item.id}" aria-label="放大查看生成结果"><img src="${item.artifact_url}" loading="lazy" alt="生成结果"><span class="image-review-hint">点击放大</span></button>` : `<div class="result-placeholder ${item.status}"><span>${item.status === 'running' ? '◌' : item.status === 'failed' ? '!' : '…'}</span><b>${labels[item.status] || item.status}</b></div>`;
   const sentiments = !compact && item.status === 'succeeded' ? `<div class="sentiment-row">${Object.entries(sentimentLabels).map(([key, value]) => `<button data-action="sentiment" data-id="${item.id}" data-value="${key}" class="sentiment ${item.sentiment === key ? 'active' : ''}">${value}</button>`).join('')}</div>` : '';
   const references = item.references.length ? `<div class="history-references">${item.references.slice(0, 4).map(ref => `<img src="/generations/${item.id}/references/${ref.id}" loading="lazy" title="参考图 ${ref.position}">`).join('')}<small>${item.references.length} 张参考图</small></div>` : '';
   return `<article class="result-card ${compact ? 'compact' : ''}" data-id="${item.id}">${media}<div class="result-content"><div class="result-meta"><span>${labels[item.provider] || item.provider} · ${escapeHtml(item.model_label)}</span><time>${date}</time></div><p>${escapeHtml(item.prompt)}</p>${references}${item.error ? `<small class="error-text">${escapeHtml(item.error)}</small>` : ''}<div class="card-actions"><button data-action="reuse" data-id="${item.id}" class="secondary">再次使用</button>${item.artifact_url ? `<a href="${item.artifact_url}?download=true" class="secondary">下载</a>` : ''}${item.can_retry ? `<button data-action="retry" data-id="${item.id}" class="secondary">安全重试</button>` : ''}</div>${sentiments}</div></article>`;
+}
+
+function updateLightbox() {
+  const item = lightboxItems[lightboxIndex];
+  if (!item) return;
+  lightboxScale = 1;
+  $('#lightbox-image').src = item.artifact_url;
+  $('#lightbox-image').style.transform = 'scale(1)';
+  $('#lightbox-title').textContent = item.model_label;
+  $('#lightbox-counter').textContent = `${lightboxIndex + 1} / ${lightboxItems.length}`;
+  $('#lightbox-prompt').textContent = item.prompt;
+  $('#lightbox-meta').textContent = `${labels[item.provider] || item.provider} · ${item.parameters.resolution || ''} · ${item.parameters.ratio || ''}`;
+  $('#lightbox-download').href = `${item.artifact_url}?download=true`;
+  $('#lightbox-zoom').textContent = '100%';
+}
+
+function openLightbox(itemId) {
+  lightboxItems = historyItems.filter(item => item.artifact_url);
+  lightboxIndex = Math.max(0, lightboxItems.findIndex(item => item.id === itemId));
+  updateLightbox();
+  $('#lightbox').showModal();
+  document.body.classList.add('lightbox-open');
+}
+
+function closeLightbox() {
+  $('#lightbox').close();
+  document.body.classList.remove('lightbox-open');
+}
+
+function setLightboxScale(nextScale) {
+  lightboxScale = Math.min(4, Math.max(0.5, nextScale));
+  $('#lightbox-image').style.transform = `scale(${lightboxScale})`;
+  $('#lightbox-zoom').textContent = `${Math.round(lightboxScale * 100)}%`;
+}
+
+function handleLightboxAction(action) {
+  if (action === 'close') closeLightbox();
+  if (action === 'zoom-in') setLightboxScale(lightboxScale + 0.25);
+  if (action === 'zoom-out') setLightboxScale(lightboxScale - 0.25);
+  if (action === 'reset') setLightboxScale(1);
+  if (action === 'previous' || action === 'next') {
+    const direction = action === 'previous' ? -1 : 1;
+    lightboxIndex = (lightboxIndex + direction + lightboxItems.length) % lightboxItems.length;
+    updateLightbox();
+  }
 }
 
 async function loadHistory() {
@@ -104,7 +152,7 @@ async function loadHistory() {
   try {
     const data = await responseJson(await fetch(`/api/generations?${query}`));
     historyItems = data.items;
-    $('#recent-list').innerHTML = data.items.length ? data.items.slice(0, 8).map(item => resultCard(item, true)).join('') : '<div class="empty-state">还没有生成任务</div>';
+    $('#recent-list').innerHTML = data.items.length ? data.items.slice(0, 4).map(item => resultCard(item, true)).join('') : '<div class="empty-state">还没有生成任务</div>';
     $('#history-grid').innerHTML = data.items.length ? data.items.map(item => resultCard(item)).join('') : '<div class="empty-state">没有符合条件的历史记录</div>';
     const active = data.items.some(item => ['queued', 'running'].includes(item.status));
     clearTimeout(refreshTimer);
@@ -130,6 +178,7 @@ async function handleAction(event) {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const item = historyItems.find(row => row.id === target.dataset.id);
+  if (target.dataset.action === 'preview' && item) return openLightbox(item.id);
   if (target.dataset.action === 'reuse' && item) return reuseItem(item);
   try {
     target.disabled = true;
@@ -170,6 +219,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!button) return;
     selectedReferenceFiles.splice(Number(button.dataset.removeReference), 1);
     syncReferenceInput();
+  });
+  $('#lightbox').addEventListener('click', event => {
+    const button = event.target.closest('[data-lightbox-action]');
+    if (button) return handleLightboxAction(button.dataset.lightboxAction);
+    if (event.target === $('#lightbox')) closeLightbox();
+  });
+  $('#lightbox-stage').addEventListener('wheel', event => {
+    event.preventDefault();
+    setLightboxScale(lightboxScale + (event.deltaY < 0 ? 0.15 : -0.15));
+  }, {passive: false});
+  document.addEventListener('keydown', event => {
+    if (!$('#lightbox').open) return;
+    if (event.key === 'Escape') closeLightbox();
+    if (event.key === 'ArrowLeft') handleLightboxAction('previous');
+    if (event.key === 'ArrowRight') handleLightboxAction('next');
+    if (event.key === '+' || event.key === '=') handleLightboxAction('zoom-in');
+    if (event.key === '-') handleLightboxAction('zoom-out');
   });
   document.querySelectorAll('.nav-tab').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
   document.body.addEventListener('click', handleAction);
