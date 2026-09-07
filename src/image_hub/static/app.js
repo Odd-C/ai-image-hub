@@ -8,6 +8,9 @@ let selectedReferenceFiles = [];
 let lightboxItems = [];
 let lightboxIndex = 0;
 let lightboxScale = 1;
+let lightboxPanX = 0;
+let lightboxPanY = 0;
+let lightboxDrag = null;
 const csrfHeaders = {'X-CSRF-Token': window.IMAGE_HUB_CSRF || ''};
 
 function newIdempotencyKey() {
@@ -106,8 +109,10 @@ function updateLightbox() {
   const item = lightboxItems[lightboxIndex];
   if (!item) return;
   lightboxScale = 1;
+  lightboxPanX = 0;
+  lightboxPanY = 0;
   $('#lightbox-image').src = item.artifact_url;
-  $('#lightbox-image').style.transform = 'scale(1)';
+  applyLightboxTransform();
   $('#lightbox-title').textContent = item.model_label;
   $('#lightbox-counter').textContent = `${lightboxIndex + 1} / ${lightboxItems.length}`;
   $('#lightbox-prompt').textContent = item.prompt;
@@ -129,17 +134,32 @@ function closeLightbox() {
   document.body.classList.remove('lightbox-open');
 }
 
+function applyLightboxTransform() {
+  $('#lightbox-image').style.transform = `translate3d(${lightboxPanX}px, ${lightboxPanY}px, 0) scale(${lightboxScale})`;
+  $('#lightbox-zoom').textContent = `${Math.round(lightboxScale * 100)}%`;
+}
+
 function setLightboxScale(nextScale) {
   lightboxScale = Math.min(4, Math.max(0.5, nextScale));
-  $('#lightbox-image').style.transform = `scale(${lightboxScale})`;
-  $('#lightbox-zoom').textContent = `${Math.round(lightboxScale * 100)}%`;
+  if (lightboxScale <= 1) {
+    lightboxPanX = 0;
+    lightboxPanY = 0;
+  }
+  applyLightboxTransform();
+}
+
+function resetLightboxView() {
+  lightboxScale = 1;
+  lightboxPanX = 0;
+  lightboxPanY = 0;
+  applyLightboxTransform();
 }
 
 function handleLightboxAction(action) {
   if (action === 'close') closeLightbox();
   if (action === 'zoom-in') setLightboxScale(lightboxScale + 0.25);
   if (action === 'zoom-out') setLightboxScale(lightboxScale - 0.25);
-  if (action === 'reset') setLightboxScale(1);
+  if (action === 'reset') resetLightboxView();
   if (action === 'previous' || action === 'next') {
     const direction = action === 'previous' ? -1 : 1;
     lightboxIndex = (lightboxIndex + direction + lightboxItems.length) % lightboxItems.length;
@@ -229,6 +249,28 @@ document.addEventListener('DOMContentLoaded', () => {
     event.preventDefault();
     setLightboxScale(lightboxScale + (event.deltaY < 0 ? 0.15 : -0.15));
   }, {passive: false});
+  $('#lightbox-image').addEventListener('pointerdown', event => {
+    event.preventDefault();
+    lightboxDrag = {x: event.clientX, y: event.clientY, panX: lightboxPanX, panY: lightboxPanY};
+    $('#lightbox-image').setPointerCapture(event.pointerId);
+    $('#lightbox-image').classList.add('dragging');
+  });
+  $('#lightbox-image').addEventListener('pointermove', event => {
+    if (!lightboxDrag) return;
+    lightboxPanX = lightboxDrag.panX + event.clientX - lightboxDrag.x;
+    lightboxPanY = lightboxDrag.panY + event.clientY - lightboxDrag.y;
+    applyLightboxTransform();
+  });
+  const endLightboxDrag = event => {
+    if (!lightboxDrag) return;
+    lightboxDrag = null;
+    $('#lightbox-image').classList.remove('dragging');
+    if ($('#lightbox-image').hasPointerCapture(event.pointerId)) {
+      $('#lightbox-image').releasePointerCapture(event.pointerId);
+    }
+  };
+  $('#lightbox-image').addEventListener('pointerup', endLightboxDrag);
+  $('#lightbox-image').addEventListener('pointercancel', endLightboxDrag);
   document.addEventListener('keydown', event => {
     if (!$('#lightbox').open) return;
     if (event.key === 'Escape') closeLightbox();
