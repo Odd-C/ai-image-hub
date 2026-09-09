@@ -1,70 +1,53 @@
 {% extends "base.html" %}
+{% block title %}{{ project.name }} · AI Image Hub{% endblock %}
 {% block body %}
-<header class="topbar">
-  <a class="brand" href="/projects"><span class="brand-mark">IH</span><span>AI Image Hub</span></a>
-  <nav>
-    <a href="/projects">项目</a>
-    <button class="nav-tab active" data-view="create">创作</button>
-    <button class="nav-tab" data-view="history">历史</button>
+<a class="skip-link" href="#canvas-viewport">跳到画布</a>
+<header class="workspace-bar">
+  <div class="workspace-left">
+    <a class="icon-link" href="/projects" aria-label="返回项目" title="返回项目">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+    </a>
+    <form class="project-name-form" action="/projects/{{ project.id }}/rename" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input name="name" value="{{ project.name }}" maxlength="160" aria-label="项目名称">
+      <button class="quiet-button" type="submit">保存名称</button>
+    </form>
+  </div>
+  <div class="workspace-actions">
+    <span class="save-state" id="save-state" role="status"><i></i>已保存</span>
+    <a href="/projects/{{ project.id }}/history">历史</a>
     {% if user.role == "admin" %}<a href="/admin">管理</a>{% endif %}
-  </nav>
-  <div class="account"><span>{{ user.display_name or user.username }}{% if user.department %} · {{ user.department }}{% endif %}</span><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">退出</button></form></div>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="quiet-button">退出</button></form>
+  </div>
 </header>
-
-<main class="app-shell" data-project-id="{{ project.id }}">
-  <div class="project-context"><form action="/projects/{{ project.id }}/rename" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="name" value="{{ project.name }}" maxlength="160" aria-label="项目名称"><button class="secondary mini">保存名称</button></form><span>一个项目 · 一张画布</span></div>
-  <section id="create-view" class="view active">
-    <div class="composer">
-      <div class="section-heading"><div><span class="eyebrow">CREATE</span><h1>生成新图像</h1></div><p>输入内容将原样提交，不做提示词扩写。</p></div>
-      <form id="generation-form">
-        <input type="hidden" name="parent_generation_id" id="parent-id">
-        <input type="hidden" name="idempotency_key" id="idempotency-key">
-        <label class="prompt-field"><span>提示词</span><textarea name="prompt" id="prompt" maxlength="12000" required placeholder="描述你想生成的画面……"></textarea><small><b id="prompt-count">0</b> / 12000</small></label>
-        <div class="reference-block">
-          <div><strong>参考图片</strong><span>可选，最多 14 张；提交顺序会被记录</span></div>
-          <label class="dropzone" id="dropzone"><input type="file" name="references" id="references" accept="image/png,image/jpeg,image/webp" multiple><span class="plus">＋</span><b>点击或拖入参考图</b><small>可分多次追加选择 · PNG / JPEG / WebP</small></label>
-          <div id="reference-preview" class="reference-preview"></div>
-        </div>
-        <div class="settings-grid">
-          <label>平台<select id="provider-select"></select></label>
-          <label>模型<select name="profile_id" id="profile-select"></select></label>
-          <label>画面比例<select name="ratio" id="ratio-select"></select></label>
-          <label>分辨率<select name="resolution" id="resolution-select"></select></label>
-          <label>质量档位<select name="quality" id="quality-select"></select></label>
-        </div>
-        <div class="submit-row"><span id="availability-note"></span><button class="primary generate" id="generate-button">开始生成 <span>→</span></button></div>
-      </form>
+<main class="canvas-shell" data-project-id="{{ project.id }}">
+  <div class="canvas-toolbar" aria-label="画布工具">
+    <label class="tool-button" title="上传图片"><input id="canvas-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M5 14v5h14v-5"/></svg><span>上传图片</span></label>
+    <button class="tool-button primary-tool" id="add-request" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>新建生图</span></button>
+    <span class="tool-divider"></span>
+    <button class="tool-button icon-only" id="fit-view" type="button" aria-label="适应内容" title="适应内容"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg></button>
+    <button class="tool-button icon-only" id="zoom-out" type="button" aria-label="缩小" title="缩小">−</button>
+    <button class="zoom-label" id="zoom-reset" type="button">100%</button>
+    <button class="tool-button icon-only" id="zoom-in" type="button" aria-label="放大" title="放大">＋</button>
+  </div>
+  <section class="canvas-viewport" id="canvas-viewport" tabindex="0" aria-label="项目创作画布">
+    <div class="canvas-world" id="canvas-world">
+      <svg class="canvas-links" id="canvas-links" width="5000" height="3600" aria-hidden="true"></svg>
+      <div class="canvas-nodes" id="canvas-nodes"></div>
     </div>
-    <aside class="recent-panel"><div class="panel-heading"><div><span class="eyebrow">VISUAL REVIEW</span><h2>最近任务</h2><p>点击图片可进入全屏审图</p></div><button class="icon-button" id="refresh-button" title="刷新">↻</button></div><div id="recent-list" class="result-list"></div></aside>
-  </section>
-
-  <section id="history-view" class="view">
-    <div class="history-header"><div><span class="eyebrow">ARCHIVE</span><h1>提示词与结果历史</h1><p>每次提交都以原始快照保存，可搜索并再次使用。</p></div>
-      <div class="filters"><input id="search-input" placeholder="搜索提示词"><select id="filter-provider"><option value="">全部平台</option><option value="libtv">LibTV</option><option value="lovart">Lovart</option><option value="api">API</option></select><select id="filter-sentiment"><option value="">全部标记</option><option value="satisfied">满意</option><option value="adopted">采用</option><option value="dissatisfied">不满意</option></select></div>
+    <div class="canvas-empty" id="canvas-empty">
+      <strong>拖入图片，或新建生图</strong>
+      <span>从图片右侧拉线，即可绑定到生图器</span>
+      <button type="button" data-empty-action="request">直接新建生图</button>
     </div>
-    <div id="history-grid" class="history-grid"></div>
   </section>
 </main>
-
 <div class="toast" id="toast" aria-live="polite"></div>
-<dialog class="lightbox" id="lightbox" aria-label="图片审图">
-  <div class="lightbox-bar">
-    <div><strong id="lightbox-title">生成结果</strong><span id="lightbox-counter"></span></div>
-    <div class="lightbox-tools">
-      <button type="button" data-lightbox-action="zoom-out" title="缩小">−</button>
-      <button type="button" data-lightbox-action="reset" id="lightbox-zoom">100%</button>
-      <button type="button" data-lightbox-action="zoom-in" title="放大">＋</button>
-      <a id="lightbox-download" href="#" download title="下载原图">下载</a>
-      <button type="button" data-lightbox-action="close" title="关闭">×</button>
-    </div>
-  </div>
-  <div class="lightbox-stage" id="lightbox-stage">
-    <button type="button" class="lightbox-nav previous" data-lightbox-action="previous" aria-label="上一张">‹</button>
-    <div class="lightbox-canvas"><img id="lightbox-image" alt="放大的生成结果"></div>
-    <button type="button" class="lightbox-nav next" data-lightbox-action="next" aria-label="下一张">›</button>
-  </div>
-  <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
-</dialog>
-<script>window.IMAGE_HUB_MODELS = {{ profiles | tojson }}; window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }}; window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};</script>
-<script src="/static/app.js" defer></script>
+<script>
+window.IMAGE_HUB_MODELS = {{ profiles | tojson }};
+window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }};
+window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};
+</script>
+<script src="/static/canvas-core.js?v=1" defer></script>
+<script src="/static/app.js?v=4" defer></script>
 {% endblock %}

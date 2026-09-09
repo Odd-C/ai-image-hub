@@ -5,6 +5,7 @@ from threading import Event, Lock
 
 from fastapi.testclient import TestClient
 
+from image_hub import providers as provider_module
 from image_hub import web as web_module
 from image_hub.app import app
 from image_hub.config import settings
@@ -72,7 +73,7 @@ def test_health_login_and_project_workspace():
         project_id = create_project(client, token, "测试项目")
         workspace = client.get(f"/projects/{project_id}")
         assert workspace.status_code == 200
-        assert "生成新图像" in workspace.text
+        assert "拖入图片，或新建生图" in workspace.text
         assert "测试项目" in workspace.text
 
 
@@ -379,7 +380,11 @@ def test_external_failure_requires_recovery(monkeypatch):
             user_id=admin.id, project_id=project.id,
             idempotency_key="recovery-test-key", original_prompt="恢复测试",
             provider="api", model_id="test-image", model_label="Test Image",
-            provider_snapshot_json=json.dumps(profile.public_dict()), status="running",
+            provider_snapshot_json=json.dumps(profile.snapshot_dict()),
+            parameters_json=json.dumps(
+                {"ratio": "1:1", "resolution": "2K", "quality": "standard"}
+            ),
+            status="running",
         )
         session.add(generation)
         session.commit()
@@ -411,3 +416,317 @@ def test_security_headers_are_present():
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["x-frame-options"] == "DENY"
         assert "default-src 'self'" in response.headers["content-security-policy"]
+
+
+def test_v1_workspace_contract_has_canvas_ports_without_legacy_surfaces():
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "V1 画布契约")
+        html = client.get(f"/projects/{project_id}").text
+        script = client.get("/static/app.js").text
+        stylesheet = client.get("/static/app.css").text
+
+        assert 'id="canvas-viewport"' in html
+        assert 'id="canvas-upload"' in html
+        assert 'id="add-request"' in html
+        assert f'href="/projects/{project_id}/history"' in html
+        for forbidden in ("Agent", "模板市场", "generation-dock", "recent-panel", "lightbox"):
+            assert forbidden not in html
+        assert "generation_request" in script
+        assert "generation_result" in script
+        assert "orderedInputIds" in script
+        assert "temporary-link" in script
+        assert "pointercancel" in script
+        assert "request.orderedInputIds.push(sourceId)" in script
+        assert "data.append('references'" in script
+        assert "for (const id of request.orderedInputIds" in script
+        assert "ImageHubResultActions" in script
+        assert "generationId" in script and "artifactUrl" in script
+        assert ".result-node:hover .sentiment-actions" in stylesheet
+        assert ".result-node:focus-within .sentiment-actions" in stylesheet
+
+
+def test_public_profiles_expose_capabilities_but_not_api_secrets():
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "公开能力契约")
+        html = client.get(f"/projects/{project_id}").text
+        assert "IMAGE_HUB_MODELS" in html
+        assert '"ratios"' in html and '"resolutions"' in html
+        assert '"max_references"' in html
+        assert settings.openai_image_base_url not in html
+        assert "openai_image_api_key" not in html
+        assert "key env" not in html
+
+
+def test_history_is_independent_and_project_scoped(monkeypatch):
+    profile = ModelProfile(
+        id="api:history-test", label="History Test", provider="api",
+        upstream_model="history-test", enabled=True,
+    )
+    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+    with TestClient(app) as client:
+        token = login(client)
+        first_id = create_project(client, token, "历史项目 A")
+        second_id = create_project(client, token, "历史项目 B")
+        created = client.post(
+            f"/api/projects/{first_id}/generations",
+            data={
+                "prompt": "仅属于项目 A", "profile_id": profile.id,
+                "ratio": "1:1", "resolution": "2K", "quality": "standard",
+                "idempotency_key": "history-project-key",
+            },
+            headers={"X-CSRF-Token": token},
+        )
+        assert created.status_code == 202
+        page = client.get(f"/projects/{first_id}/history")
+        assert page.status_code == 200
+        assert "生成历史" in page.text
+        for control in ("history-project", "history-status", "history-model", "history-sentiment"):
+            assert f'id="{control}"' in page.text
+        filtered = client.get(
+            f"/api/projects/{first_id}/generations", params={"status_filter": "queued"}
+        )
+        assert filtered.json()["items"][0]["prompt"] == "仅属于项目 A"
+        assert client.get(f"/api/projects/{second_id}/generations").json()["items"] == []
+
+
+def test_admin_can_store_api_config_without_echoing_secret(monkeypatch):
+    monkeypatch.setattr(
+        provider_module, "_resolve_and_validate_endpoint", lambda _url: ("203.0.113.10",)
+    )
+    config_path = settings.storage_root / "provider-config.json"
+    config_path.unlink(missing_ok=True)
+    with TestClient(app) as client:
+        token = login(client)
+        response = client.post(
+            "/admin/providers/api",
+            data={
+                "csrf": token,
+                "base_url": "https://images.example.test/v1",
+                "api_key": "server-only-test-key",
+                "models": "image-v1|Studio Image|1:1;3:4|1K;2K|4",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        admin_html = client.get("/admin").text
+        assert "API · Studio Image" in admin_html
+        assert "server-only-test-key" not in admin_html
+        project_id = create_project(client, token, "API 配置公开边界")
+        workspace_html = client.get(f"/projects/{project_id}").text
+        assert "Studio Image" in workspace_html
+        assert "server-only-test-key" not in workspace_html
+        assert "images.example.test" not in workspace_html
+        assert "image-v1" not in workspace_html
+        assert "api:image-v1" not in workspace_html
+    config_path.unlink(missing_ok=True)
+
+
+def test_queued_api_generation_keeps_submission_route_after_admin_edit(monkeypatch):
+    config_path = settings.storage_root / "provider-config.json"
+    original_config = config_path.read_bytes() if config_path.exists() else None
+    monkeypatch.setattr(
+        provider_module, "_resolve_and_validate_endpoint", lambda _url: ("198.51.100.20",)
+    )
+    captured = {}
+
+    def capture_frozen_route(_generation, profile):
+        config = provider_module._load_api_execution_config(profile.execution_config_id)
+        captured.update(base_url=config["base_url"], api_key=config["api_key"])
+        captured["upstream_model"] = profile.upstream_model
+
+    monkeypatch.setattr(provider_module, "_execute_api", capture_frozen_route)
+    try:
+        provider_module.save_api_config(
+            "https://old-route.example.test/v1", "old-secret", "route-model|Route model"
+        )
+        profile = next(
+            item for item in provider_module.model_profiles() if item.upstream_model == "route-model"
+        )
+        with TestClient(app) as client:
+            token = login(client)
+            project_id = create_project(client, token, "冻结 API 路由")
+            response = client.post(
+                f"/api/projects/{project_id}/generations",
+                data={
+                    "prompt": "必须走旧路由",
+                    "profile_id": profile.id,
+                    "ratio": "1:1",
+                    "resolution": "2K",
+                    "quality": "standard",
+                    "idempotency_key": "frozen-route-1234",
+                },
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 202
+            generation_id = response.json()["id"]
+
+        provider_module.save_api_config(
+            "https://new-route.example.test/v1", "new-secret", "route-model|Route model"
+        )
+        execute_generation(generation_id)
+
+        assert captured == {
+            "base_url": "https://old-route.example.test/v1",
+            "api_key": "old-secret",
+            "upstream_model": "route-model",
+        }
+        with SessionLocal() as session:
+            assert session.get(Generation, generation_id).status == "succeeded"
+    finally:
+        if original_config is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            config_path.write_bytes(original_config)
+
+
+def test_legacy_api_profile_ids_resolve_or_remain_explicitly_unavailable(monkeypatch):
+    config_path = settings.storage_root / "provider-config.json"
+    original_config = config_path.read_bytes() if config_path.exists() else None
+    monkeypatch.setattr(
+        provider_module, "_resolve_and_validate_endpoint", lambda _url: ("198.51.100.21",)
+    )
+    try:
+        provider_module.save_api_config(
+            "https://legacy.example.test/v1", "legacy-secret", "legacy-model|Legacy Model"
+        )
+        current = provider_module.get_profile("api:legacy-model")
+        assert current is not None
+        assert current.id.startswith("api:")
+        assert current.id != "api:legacy-model"
+
+        with TestClient(app) as client:
+            token = login(client)
+            project_id = create_project(client, token, "旧模型兼容")
+            with SessionLocal() as session:
+                user = session.query(User).filter_by(username="admin").one()
+                generation = Generation(
+                    user_id=user.id,
+                    project_id=project_id,
+                    idempotency_key="legacy-row-key",
+                    original_prompt="旧结果提示词",
+                    provider="api",
+                    model_id="legacy-model",
+                    model_label="Legacy Model",
+                    provider_snapshot_json=json.dumps(
+                        ModelProfile(
+                            id="api:legacy-model",
+                            label="Legacy Model",
+                            provider="api",
+                            upstream_model="legacy-model",
+                            enabled=True,
+                        ).public_dict()
+                    ),
+                    parameters_json=json.dumps(
+                        {"ratio": "3:4", "resolution": "2K", "quality": "standard"}
+                    ),
+                    status="succeeded",
+                )
+                session.add(generation)
+                session.commit()
+                generation_id = generation.id
+
+            saved = client.put(
+                f"/api/projects/{project_id}/canvas",
+                json={
+                    "draft": {"profile": "api:legacy-model", "prompt": "旧草稿"},
+                    "nodes": [
+                        {
+                            "id": "legacy-request",
+                            "type": "generation_request",
+                            "profileId": "api:legacy-model",
+                        },
+                        {
+                            "id": "legacy-result",
+                            "type": "generation_result",
+                            "generationId": generation_id,
+                            "profileId": "api:legacy-model",
+                        },
+                    ]
+                },
+                headers={"X-CSRF-Token": token},
+            )
+            assert saved.status_code == 200
+            loaded_state = client.get(f"/api/projects/{project_id}/canvas").json()["state"]
+            loaded_nodes = loaded_state["nodes"]
+            assert loaded_state["draft"]["profile"] == current.id
+            assert [node["profileId"] for node in loaded_nodes] == [current.id, current.id]
+            assert all("profileUnavailable" not in node for node in loaded_nodes)
+
+            historical = client.get(
+                f"/api/projects/{project_id}/generations/{generation_id}"
+            ).json()
+            assert historical["profile_id"] == current.id
+            assert historical["profile_available"] is True
+
+            provider_module.save_api_config(
+                "https://legacy.example.test/v1", "legacy-secret", "replacement|Replacement"
+            )
+            unavailable = client.get(
+                f"/api/projects/{project_id}/generations/{generation_id}"
+            ).json()
+            assert unavailable["profile_id"] == current.id
+            assert unavailable["profile_available"] is False
+            assert "legacy-model" not in json.dumps(unavailable)
+            blocked = client.post(
+                f"/api/projects/{project_id}/generations",
+                data={
+                    "prompt": "不得切到其他供应商",
+                    "profile_id": "api:legacy-model",
+                    "ratio": "1:1",
+                    "resolution": "2K",
+                    "quality": "standard",
+                    "idempotency_key": "legacy-blocked-1234",
+                },
+                headers={"X-CSRF-Token": token},
+            )
+            assert blocked.status_code == 503
+    finally:
+        if original_config is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            config_path.write_bytes(original_config)
+
+
+def test_ambiguous_legacy_and_opaque_api_id_fails_closed(monkeypatch):
+    opaque_match = ModelProfile(
+        id="api:collision", label="Opaque match", provider="api",
+        upstream_model="different-model", enabled=True,
+    )
+    legacy_match = ModelProfile(
+        id="api:other-opaque", label="Legacy match", provider="api",
+        upstream_model="collision", enabled=True,
+    )
+    monkeypatch.setattr(
+        provider_module, "model_profiles", lambda: (opaque_match, legacy_match)
+    )
+
+    assert provider_module.get_profile("api:collision") is None
+    assert provider_module.get_profile("api:other-opaque") == legacy_match
+
+
+def test_history_uses_distinct_locate_and_continue_actions():
+    script = (settings.static_dir / "history.js").read_text()
+    assert "?action=locate&amp;generation=" in script
+    assert "?action=continue&amp;generation=" in script
+    assert "?reuse=" not in script
+
+
+def test_member_cannot_open_another_users_history():
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        session.add(
+            User(
+                username="history-member",
+                display_name="历史普通成员",
+                password_hash=admin.password_hash,
+            )
+        )
+        session.commit()
+    with TestClient(app) as admin_client:
+        admin_token = login(admin_client)
+        admin_project = create_project(admin_client, admin_token, "管理员历史")
+    with TestClient(app) as member_client:
+        login(member_client, "history-member")
+        assert member_client.get(f"/projects/{admin_project}/history").status_code == 404

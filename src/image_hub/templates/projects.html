@@ -19,7 +19,7 @@
         {% set latest = project.generations[0] if project.generations else none %}
         {% if latest and latest.artifact_storage_key %}<img src="/generations/{{ latest.id }}/artifact" alt="{{ project.name }} 最近结果">{% else %}<span>IH</span>{% endif %}
       </a>
-      <div class="project-card-body"><div><h2><a href="/projects/{{ project.id }}">{{ project.name }}</a></h2><p>{{ project.generations | length }} 次生成 · {{ project.updated_at.strftime('%Y-%m-%d %H:%M') }}</p></div><form action="/projects/{{ project.id }}/archive" method="post" onsubmit="return confirm('归档这个项目？生成记录和画布会保留。')"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="secondary mini">归档</button></form></div>
+      <div class="project-card-body"><div><h2><a href="/projects/{{ project.id }}">{{ project.name }}</a></h2><p>{{ project.generations | length }} 次生成 · {{ project.updated_at.strftime('%Y-%m-%d %H:%M') }}</p></div></div>
     </article>
     {% endfor %}
   </section>

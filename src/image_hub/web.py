@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 
@@ -19,7 +20,15 @@ from image_hub.auth import (
 from image_hub.config import settings
 from image_hub.db import get_session
 from image_hub.models import Generation, Project, ReferenceImage, User, new_id, utcnow
-from image_hub.providers import get_profile, model_profiles, recover_generation
+from image_hub.providers import (
+    ProviderConfigError,
+    freeze_profile_execution,
+    get_profile,
+    model_profiles,
+    public_api_config,
+    recover_generation,
+    save_api_config,
+)
 from image_hub.storage import InvalidImage, resolve_storage_key, store_reference
 from image_hub.worker import generation_worker
 
@@ -67,6 +76,109 @@ def _owned_project_generation(
     if generation is None:
         raise HTTPException(404, "生成记录不存在")
     return generation
+
+
+def _generation_profile_id(generation: Generation) -> tuple[str, bool]:
+    requested = f"{generation.provider}:{generation.model_id}"
+    try:
+        snapshot = json.loads(generation.provider_snapshot_json or "{}")
+    except json.JSONDecodeError:
+        snapshot = {}
+    snapshot_id = snapshot.get("id") if isinstance(snapshot, dict) else ""
+    profile = get_profile(str(snapshot_id or requested))
+    if profile:
+        return profile.id, True
+    if generation.provider == "api":
+        upstream_model = (
+            snapshot.get("upstream_model", generation.model_id)
+            if isinstance(snapshot, dict)
+            else generation.model_id
+        )
+        opaque_id = hashlib.sha256(str(upstream_model).encode()).hexdigest()[:16]
+        return f"api:{opaque_id}", False
+    return str(snapshot_id or requested), False
+
+
+def _generation_dict(generation: Generation) -> dict:
+    profile_id, profile_available = _generation_profile_id(generation)
+    try:
+        snapshot = json.loads(generation.provider_snapshot_json or "{}")
+    except json.JSONDecodeError:
+        snapshot = {}
+    upstream_model = snapshot.get("upstream_model", "") if isinstance(snapshot, dict) else ""
+    model_label = generation.model_label
+    if generation.provider == "api" and model_label in {generation.model_id, upstream_model}:
+        model_label = "API 模型"
+    return {
+        "id": generation.id,
+        "prompt": generation.original_prompt,
+        "provider": generation.provider,
+        "profile_id": profile_id,
+        "profile_available": profile_available,
+        "model_label": model_label,
+        "parameters": json.loads(generation.parameters_json or "{}"),
+        "references": json.loads(generation.reference_manifest_json or "[]"),
+        "parent_generation_id": generation.parent_generation_id,
+        "status": generation.status,
+        "sentiment": generation.sentiment,
+        "error": (
+            "API 图像生成失败，请联系管理员检查服务端配置"
+            if generation.provider == "api" and generation.error_message
+            else generation.error_message
+        ),
+        "created_at": generation.created_at.isoformat(),
+        "artifact_url": (
+            f"/generations/{generation.id}/artifact" if generation.artifact_storage_key else ""
+        ),
+        "can_retry": generation.status in {"failed", "recovery_required"}
+        and not generation.external_project_id
+        and not generation.external_task_id,
+    }
+
+
+def _migrate_canvas_profile_ids(state: dict, session: Session, project: Project) -> dict:
+    draft = state.get("draft")
+    if isinstance(draft, dict) and draft.get("profile"):
+        draft_profile = get_profile(str(draft["profile"]))
+        if draft_profile:
+            draft["profile"] = draft_profile.id
+            draft.pop("profileUnavailable", None)
+        else:
+            draft["profileUnavailable"] = True
+    nodes = state.get("nodes")
+    if not isinstance(nodes, list):
+        return state
+    generation_ids = {
+        str(node.get("generationId"))
+        for node in nodes
+        if isinstance(node, dict) and node.get("generationId")
+    }
+    generations = {
+        generation.id: generation
+        for generation in session.scalars(
+            select(Generation).where(
+                Generation.project_id == project.id,
+                Generation.id.in_(generation_ids),
+            )
+        ).all()
+    } if generation_ids else {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        generation = generations.get(str(node.get("generationId", "")))
+        raw_profile_id = (
+            f"{generation.provider}:{generation.model_id}"
+            if generation
+            else str(node.get("profileId", ""))
+        )
+        profile = get_profile(raw_profile_id) if raw_profile_id else None
+        if profile:
+            node["profileId"] = profile.id
+            node.pop("profileUnavailable", None)
+        elif raw_profile_id:
+            node["profileId"] = raw_profile_id
+            node["profileUnavailable"] = True
+    return state
 
 
 def _locked_generation_user(request: Request, session: Session) -> User:
@@ -194,6 +306,33 @@ def workspace(
     )
 
 
+@router.get("/projects/{project_id}/history")
+def history_page(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user = _user_or_redirect(request, session)
+    if not user:
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    project = _owned_project(session, user, project_id)
+    projects = session.scalars(
+        select(Project)
+        .where(Project.user_id == user.id, Project.archived_at.is_(None))
+        .order_by(Project.updated_at.desc())
+    ).all()
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        {
+            "user": user,
+            "project": project,
+            "projects": projects,
+            "profiles": [profile.public_dict() for profile in model_profiles()],
+        },
+    )
+
+
 @router.post("/projects/{project_id}/rename")
 def rename_project(
     project_id: str,
@@ -246,7 +385,8 @@ def get_canvas_state(
 ):
     user = current_user(request, session)
     project = _owned_project(session, user, project_id)
-    return {"project_id": project.id, "state": json.loads(project.canvas_state_json or "{}")}
+    state = json.loads(project.canvas_state_json or "{}")
+    return {"project_id": project.id, "state": _migrate_canvas_profile_ids(state, session, project)}
 
 
 @router.put("/api/projects/{project_id}/canvas")
@@ -308,6 +448,10 @@ async def create_generation(
         raise HTTPException(422, "模型参数无效")
     if len(references) > profile.max_references:
         raise HTTPException(422, f"该模型参考图最多 {profile.max_references} 张")
+    try:
+        profile = freeze_profile_execution(profile)
+    except ProviderConfigError as exc:
+        raise HTTPException(503, f"API 路由安全校验失败：{exc}") from exc
     active_count = session.scalar(
         select(func.count()).select_from(Generation).where(
             Generation.user_id == user.id,
@@ -334,7 +478,7 @@ async def create_generation(
         provider=profile.provider,
         model_id=profile.id.split(":", 1)[1],
         model_label=profile.label,
-        provider_snapshot_json=json.dumps(profile.public_dict(), ensure_ascii=False),
+        provider_snapshot_json=json.dumps(profile.snapshot_dict(), ensure_ascii=False),
         parameters_json=json.dumps(
             {"ratio": ratio, "resolution": resolution, "quality": quality},
             ensure_ascii=False,
@@ -387,6 +531,8 @@ def list_generations(
     request: Request,
     q: str = "",
     provider: str = "",
+    model: str = "",
+    status_filter: str = "",
     sentiment: str = "",
     limit: int = 60,
     session: Session = Depends(get_session),
@@ -398,31 +544,26 @@ def list_generations(
         query = query.where(Generation.original_prompt.contains(q.strip()))
     if provider:
         query = query.where(Generation.provider == provider)
+    if model:
+        query = query.where(Generation.model_id == model)
+    if status_filter:
+        query = query.where(Generation.status == status_filter)
     if sentiment:
         query = query.where(Generation.sentiment == sentiment)
     generations = session.scalars(query.order_by(Generation.created_at.desc()).limit(min(limit, 100))).all()
-    return {
-        "items": [
-            {
-                "id": item.id,
-                "prompt": item.original_prompt,
-                "provider": item.provider,
-                "model_id": item.model_id,
-                "model_label": item.model_label,
-                "parameters": json.loads(item.parameters_json or "{}"),
-                "references": json.loads(item.reference_manifest_json or "[]"),
-                "parent_generation_id": item.parent_generation_id,
-                "status": item.status,
-                "sentiment": item.sentiment,
-                "error": item.error_message,
-                "created_at": item.created_at.isoformat(),
-                "artifact_url": f"/generations/{item.id}/artifact" if item.artifact_storage_key else "",
-                "can_retry": item.status in {"failed", "recovery_required"}
-                and not item.external_project_id and not item.external_task_id,
-            }
-            for item in generations
-        ]
-    }
+    return {"items": [_generation_dict(item) for item in generations]}
+
+
+@router.get("/api/projects/{project_id}/generations/{generation_id}")
+def generation_detail(
+    project_id: str,
+    generation_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    user = current_user(request, session)
+    generation = _owned_project_generation(session, user, project_id, generation_id)
+    return _generation_dict(generation)
 
 
 @router.post("/api/projects/{project_id}/generations/{generation_id}/sentiment")
@@ -523,8 +664,33 @@ def admin_page(request: Request, session: Session = Depends(get_session)):
         "admin.html",
         {"user": user, "users": users, "counts": counts,
          "profiles": model_profiles(), "csrf_token": csrf_token(request),
-         "recovery_tasks": recovery_tasks},
+         "api_config": public_api_config(), "recovery_tasks": recovery_tasks},
     )
+
+
+@router.post("/admin/providers/api")
+def configure_api_provider(
+    request: Request,
+    base_url: str = Form(...),
+    api_key: str = Form(""),
+    models: str = Form(...),
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
+    admin = current_user(request, session)
+    require_admin(admin)
+    if not 8 <= len(base_url) <= 500:
+        raise HTTPException(422, "API Base URL 长度无效")
+    if len(api_key) > 1000:
+        raise HTTPException(422, "API Key 长度超过限制")
+    if not 1 <= len(models) <= 12000:
+        raise HTTPException(422, "API 模型配置长度无效")
+    try:
+        save_api_config(base_url, api_key, models)
+    except ProviderConfigError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return RedirectResponse("/admin", status_code=303)
 
 
 @router.post("/admin/users")

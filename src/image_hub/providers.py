@@ -1,10 +1,16 @@
 import base64
+import hashlib
+import hmac
+import ipaddress
 import json
 import os
+import secrets
 import shutil
+import socket
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.orm import object_session
@@ -26,8 +32,17 @@ class ModelProfile:
     qualities: tuple[str, ...] = ("standard",)
     resolutions: tuple[str, ...] = ("2K",)
     max_references: int = 14
+    execution_config_id: str = ""
 
     def public_dict(self) -> dict:
+        """Return browser-safe selection metadata without upstream routing details."""
+        payload = asdict(self)
+        payload.pop("upstream_model", None)
+        payload.pop("execution_config_id", None)
+        return payload
+
+    def snapshot_dict(self) -> dict:
+        """Keep immutable server-side execution routing with the generation evidence."""
         return asdict(self)
 
 
@@ -50,6 +65,263 @@ LIBTV_MODELS = (
     ("qwen-edit", "Qwen Edit"),
     ("seedream-4", "Seedream 4.0"),
 )
+
+
+class ProviderConfigError(ValueError):
+    """An administrator supplied an unsafe or unsupported provider configuration."""
+
+
+API_RATIOS = frozenset({"1:1", "4:3", "3:4", "16:9", "9:16"})
+API_RESOLUTIONS = frozenset({"1K", "2K", "4K"})
+API_QUALITIES = frozenset({"standard"})
+_API_ENABLED_VALUES = frozenset({"1", "true", "on", "启用"})
+_API_DISABLED_VALUES = frozenset({"0", "false", "off", "停用"})
+
+
+def _api_config() -> dict:
+    """Load optional admin-managed API routing from server-only storage."""
+    path = settings.storage_root / "provider-config.json"
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {
+        "base_url": settings.openai_image_base_url,
+        "api_key": settings.openai_image_api_key,
+        "models": settings.openai_image_models,
+    }
+
+
+def _atomic_write_private_json(path: Path, payload: dict) -> None:
+    """Atomically replace a private JSON file that is mode 0600 from creation."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _parse_allowlist() -> tuple[set[str], tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]]:
+    hosts: set[str] = set()
+    networks = []
+    for raw in settings.api_private_network_allowlist.split(","):
+        entry = raw.strip().lower()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            hosts.add(entry.rstrip("."))
+    return hosts, tuple(networks)
+
+
+def _resolve_and_validate_endpoint(base_url: str) -> tuple[str, ...]:
+    parsed = urlsplit(base_url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ProviderConfigError("API Base URL 必须是有效的 HTTPS 地址")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ProviderConfigError("API Base URL 不得包含凭证、查询参数或片段")
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ProviderConfigError("API Base URL 端口无效") from exc
+    hostname = parsed.hostname.rstrip(".").lower()
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        }
+    except socket.gaierror as exc:
+        raise ProviderConfigError("API Base URL 域名无法解析") from exc
+    if not addresses:
+        raise ProviderConfigError("API Base URL 域名未解析到地址")
+    allowed_hosts, allowed_networks = _parse_allowlist()
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ProviderConfigError("API Base URL 域名解析结果无效") from exc
+        allowlisted_private = hostname in allowed_hosts or any(
+            ip in network for network in allowed_networks
+        )
+        if (
+            ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+            or ip.is_reserved
+        ):
+            raise ProviderConfigError("API Base URL 不得指向本机、链路本地或保留地址")
+        if ip.is_private:
+            if not allowlisted_private:
+                raise ProviderConfigError("API Base URL 指向内网；需由服务端 allowlist 明确授权")
+        elif not ip.is_global:
+            raise ProviderConfigError("API Base URL 不得指向非公网地址")
+    return tuple(sorted(addresses))
+
+
+def _parse_api_models(models: str) -> tuple[dict, ...]:
+    parsed_models = []
+    seen = set()
+    raw_models = models.split(",")
+    if any(not item.strip() for item in raw_models):
+        raise ProviderConfigError("API 模型配置包含空行或多余逗号")
+    for raw_item in raw_models:
+        fields = [field.strip() for field in raw_item.split("|")]
+        if len(fields) > 7 or not fields[0] or any("\n" in field or "\r" in field for field in fields):
+            raise ProviderConfigError("API 模型配置格式无效")
+        model_id = fields[0]
+        if any(character.isspace() for character in model_id):
+            raise ProviderConfigError("API 模型 ID 不得包含空白字符")
+        if model_id in seen:
+            raise ProviderConfigError("API 模型 ID 不得重复")
+        seen.add(model_id)
+        ratios = (
+            tuple(filter(None, fields[2].split(";")))
+            if len(fields) > 2
+            else tuple(sorted(API_RATIOS))
+        )
+        resolutions = (
+            tuple(filter(None, fields[3].split(";")))
+            if len(fields) > 3
+            else tuple(sorted(API_RESOLUTIONS))
+        )
+        if not ratios or any(value not in API_RATIOS for value in ratios):
+            raise ProviderConfigError("API 模型包含执行器不支持的比例")
+        if not resolutions or any(value not in API_RESOLUTIONS for value in resolutions):
+            raise ProviderConfigError("API 模型包含执行器不支持的分辨率")
+        try:
+            max_references = int(fields[4]) if len(fields) > 4 else 4
+        except ValueError as exc:
+            raise ProviderConfigError("API 模型最大参考图数量必须是整数") from exc
+        if not 0 <= max_references <= 14:
+            raise ProviderConfigError("API 模型最大参考图数量必须在 0 到 14 之间")
+        enabled_value = fields[5].lower() if len(fields) > 5 else "true"
+        if enabled_value not in _API_ENABLED_VALUES | _API_DISABLED_VALUES:
+            raise ProviderConfigError("API 模型启用状态必须是 true 或 false")
+        qualities = (
+            tuple(filter(None, fields[6].split(";")))
+            if len(fields) > 6
+            else tuple(sorted(API_QUALITIES))
+        )
+        if not qualities or any(value not in API_QUALITIES for value in qualities):
+            raise ProviderConfigError("API 模型包含执行器不支持的质量参数")
+        parsed_models.append(
+            {
+                "model_id": model_id,
+                "label": (
+                    fields[1]
+                    if len(fields) > 1 and fields[1] and fields[1] != model_id
+                    else f"API 模型 {len(parsed_models) + 1}"
+                ),
+                "ratios": ratios,
+                "resolutions": resolutions,
+                "qualities": qualities,
+                "max_references": max_references,
+                "enabled": enabled_value in _API_ENABLED_VALUES,
+            }
+        )
+    if not parsed_models:
+        raise ProviderConfigError("至少配置一个 API 模型")
+    return tuple(parsed_models)
+
+
+def _validated_api_config(base_url: str, api_key: str, models: str) -> dict:
+    normalized_url = base_url.strip().rstrip("/")
+    resolved_ips = _resolve_and_validate_endpoint(normalized_url)
+    _parse_api_models(models.strip())
+    return {
+        "base_url": normalized_url,
+        "api_key": api_key.strip(),
+        "models": models.strip(),
+        "resolved_ips": list(resolved_ips),
+    }
+
+
+def save_api_config(base_url: str, api_key: str, models: str) -> None:
+    """Validate and atomically persist server-only credentials with mode 0600."""
+    current = _api_config()
+    payload = _validated_api_config(
+        base_url,
+        api_key.strip() or str(current.get("api_key", "")),
+        models,
+    )
+    _atomic_write_private_json(settings.storage_root / "provider-config.json", payload)
+
+
+def public_api_config() -> dict:
+    """Expose configuration state without returning any routing or credential material."""
+    config = _api_config()
+    return {
+        "has_base_url": bool(config.get("base_url")),
+        "has_api_key": bool(config.get("api_key")),
+        "has_models": bool(config.get("models")),
+    }
+
+
+def _execution_config_id(config: dict) -> str:
+    encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(settings.session_secret.encode(), encoded, hashlib.sha256).hexdigest()[:32]
+
+
+def _freeze_api_execution_config() -> str:
+    current = _api_config()
+    config = _validated_api_config(
+        str(current.get("base_url", "")),
+        str(current.get("api_key", "")),
+        str(current.get("models", "")),
+    )
+    identity = _execution_config_id(config)
+    path = settings.storage_root / "provider-configs" / f"{identity}.json"
+    if not path.exists():
+        _atomic_write_private_json(path, config)
+    return identity
+
+
+def freeze_profile_execution(profile: ModelProfile) -> ModelProfile:
+    """Attach an immutable server-only route identity before a task is queued."""
+    if profile.provider != "api":
+        return profile
+    identity = _freeze_api_execution_config()
+    if profile.execution_config_id and profile.execution_config_id != identity:
+        raise ProviderConfigError("API 配置在提交期间发生变化，请重新确认模型后提交")
+    return replace(profile, execution_config_id=identity)
+
+
+def _load_api_execution_config(identity: str) -> dict:
+    if not identity or not all(character in "0123456789abcdef" for character in identity):
+        raise RuntimeError("API 任务缺少有效的冻结配置标识")
+    path = settings.storage_root / "provider-configs" / f"{identity}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("API 任务的冻结配置不存在或已损坏") from exc
+    if not isinstance(payload, dict) or _execution_config_id(payload) != identity:
+        raise RuntimeError("API 任务的冻结配置校验失败")
+    current_ips = _resolve_and_validate_endpoint(str(payload.get("base_url", "")))
+    if tuple(payload.get("resolved_ips", ())) != current_ips:
+        raise RuntimeError("API 上游 DNS 已变化，已阻止可能的重绑定请求")
+    return payload
 
 
 def model_profiles() -> tuple[ModelProfile, ...]:
@@ -84,22 +356,49 @@ def model_profiles() -> tuple[ModelProfile, ...]:
             ),
         ]
     )
-    for item in settings.openai_image_models.split(","):
-        model_id, _, label = item.strip().partition("|")
-        if model_id:
-            profiles.append(
-                ModelProfile(
-                    id=f"api:{model_id}", label=label or model_id, provider="api",
-                    upstream_model=model_id, enabled=bool(settings.openai_image_api_key),
-                    resolutions=("1K", "2K", "4K"),
-                    max_references=4,
-                )
+    api_config = _api_config()
+    try:
+        api_models = _parse_api_models(str(api_config.get("models", "")))
+    except ProviderConfigError:
+        api_models = ()
+    for item in api_models:
+        public_id = hashlib.sha256(item["model_id"].encode()).hexdigest()[:16]
+        profiles.append(
+            ModelProfile(
+                id=f"api:{public_id}",
+                label=item["label"],
+                provider="api",
+                upstream_model=item["model_id"],
+                enabled=bool(
+                    item["enabled"] and api_config.get("api_key") and api_config.get("base_url")
+                ),
+                ratios=item["ratios"],
+                resolutions=item["resolutions"],
+                qualities=item["qualities"],
+                max_references=item["max_references"],
+                execution_config_id=(
+                    _execution_config_id(api_config) if api_config.get("resolved_ips") else ""
+                ),
             )
+        )
     return tuple(profiles)
 
 
 def get_profile(profile_id: str) -> ModelProfile | None:
-    return next((profile for profile in model_profiles() if profile.id == profile_id), None)
+    """Resolve opaque and legacy IDs, failing closed if their meanings collide."""
+    profiles = model_profiles()
+    exact_matches = [profile for profile in profiles if profile.id == profile_id]
+    if not profile_id.startswith("api:"):
+        return exact_matches[0] if len(exact_matches) == 1 else None
+
+    legacy_model = profile_id.split(":", 1)[1]
+    legacy_matches = [
+        profile
+        for profile in profiles
+        if profile.provider == "api" and profile.upstream_model == legacy_model
+    ]
+    matches = {profile.id: profile for profile in (*exact_matches, *legacy_matches)}
+    return next(iter(matches.values())) if len(matches) == 1 else None
 
 
 def _params(generation: Generation) -> dict:
@@ -261,13 +560,24 @@ def _data_url(path: Path) -> str:
 
 def _execute_api(generation: Generation, profile: ModelProfile) -> None:
     params = _params(generation)
-    edge = {"1K": 1024, "2K": 2048, "4K": 4096}.get(params.get("resolution"), 2048)
+    resolution = params.get("resolution")
+    ratio = params.get("ratio")
+    quality = params.get("quality")
+    if resolution not in profile.resolutions or resolution not in API_RESOLUTIONS:
+        raise RuntimeError("API 任务包含执行器不支持的分辨率")
+    if ratio not in profile.ratios or ratio not in API_RATIOS:
+        raise RuntimeError("API 任务包含执行器不支持的比例")
+    if quality not in profile.qualities or quality not in API_QUALITIES:
+        raise RuntimeError("API 任务包含执行器不支持的质量参数")
+    if len(generation.references) > profile.max_references:
+        raise RuntimeError("API 任务参考图数量超过冻结能力上限")
+    edge = {"1K": 1024, "2K": 2048, "4K": 4096}[resolution]
     ratio_dimensions = {
         "1:1": (edge, edge), "4:3": (edge, edge * 3 // 4),
         "3:4": (edge * 3 // 4, edge), "16:9": (edge, edge * 9 // 16),
         "9:16": (edge * 9 // 16, edge),
     }
-    width, height = ratio_dimensions.get(params.get("ratio"), (edge, edge))
+    width, height = ratio_dimensions[ratio]
     body = {
         "model": profile.upstream_model,
         "prompt": generation.original_prompt,
@@ -276,15 +586,16 @@ def _execute_api(generation: Generation, profile: ModelProfile) -> None:
         "response_format": "b64_json",
         "watermark": False,
     }
-    if params.get("quality") not in (None, "standard"):
-        body["quality"] = params["quality"]
+    if quality != "standard":
+        body["quality"] = quality
     references = _references(generation)
     if references:
         body["image"] = [_data_url(path) for path in references]
+    api_config = _load_api_execution_config(profile.execution_config_id)
     with httpx.Client(timeout=300) as client:
         response = client.post(
-            f"{settings.openai_image_base_url.rstrip('/')}/images/generations",
-            headers={"Authorization": f"Bearer {settings.openai_image_api_key}"}, json=body,
+            f"{str(api_config['base_url']).rstrip('/')}/images/generations",
+            headers={"Authorization": f"Bearer {api_config['api_key']}"}, json=body,
         )
         response.raise_for_status()
         payload = response.json()
@@ -311,6 +622,18 @@ def _execute_api(generation: Generation, profile: ModelProfile) -> None:
     generation.artifact_storage_key = str(target.relative_to(settings.storage_root))
 
 
+def _validate_frozen_capabilities(generation: Generation, profile: ModelProfile) -> None:
+    params = _params(generation)
+    if params.get("ratio") not in profile.ratios:
+        raise RuntimeError("任务比例不在冻结能力范围内")
+    if params.get("resolution") not in profile.resolutions:
+        raise RuntimeError("任务分辨率不在冻结能力范围内")
+    if params.get("quality") not in profile.qualities:
+        raise RuntimeError("任务质量不在冻结能力范围内")
+    if len(generation.references) > profile.max_references:
+        raise RuntimeError("任务参考图数量超过冻结能力上限")
+
+
 def execute_generation(generation_id: str) -> None:
     from image_hub.db import SessionLocal
 
@@ -327,7 +650,13 @@ def execute_generation(generation_id: str) -> None:
         try:
             if not profile or not profile.enabled:
                 raise RuntimeError("生成平台或模型当前不可用")
-            {"libtv": _execute_libtv, "lovart": _execute_lovart, "api": _execute_api}[profile.provider](generation, profile)
+            _validate_frozen_capabilities(generation, profile)
+            executor = {"libtv": _execute_libtv, "lovart": _execute_lovart, "api": _execute_api}.get(
+                profile.provider
+            )
+            if executor is None:
+                raise RuntimeError("任务执行器未知")
+            executor(generation, profile)
             generation.status = "succeeded"
         except Exception as exc:  # noqa: BLE001
             generation.status = (
@@ -335,7 +664,11 @@ def execute_generation(generation_id: str) -> None:
                 if generation.external_project_id or generation.external_task_id
                 else "failed"
             )
-            generation.error_message = str(exc)[-2000:]
+            generation.error_message = (
+                "API 图像生成失败，请联系管理员检查服务端配置"
+                if profile and profile.provider == "api"
+                else str(exc)[-2000:]
+            )
         finally:
             generation.finished_at = utcnow()
             generation.lease_owner = ""

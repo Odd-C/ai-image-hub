@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     openai_image_api_key: str = ""
     openai_image_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     openai_image_models: str = "doubao-seedream-5-0-pro-260628|Seedream 5.0 Pro"
+    api_private_network_allowlist: str = ""
     worker_enabled: bool = True
     worker_poll_seconds: float = 1.0
     worker_stale_minutes: int = 60

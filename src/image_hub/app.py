@@ -44,7 +44,7 @@ async def security_headers(request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' blob: data:; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; "
+        "style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; "
         "form-action 'self'"
     )
     if settings.env == "production":
