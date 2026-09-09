@@ -72,7 +72,7 @@ def test_health_login_and_project_workspace():
         project_id = create_project(client, token, "测试项目")
         workspace = client.get(f"/projects/{project_id}")
         assert workspace.status_code == 200
-        assert "生成新图像" in workspace.text
+        assert "节点画布" in workspace.text
         assert "测试项目" in workspace.text
 
 
@@ -165,6 +165,42 @@ def test_canvas_state_is_unique_per_project():
             **first_state,
             "draft": draft,
         }
+
+
+def test_workspace_is_canvas_first_and_keeps_security_contract():
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "节点画布契约")
+        page = client.get(f"/projects/{project_id}").text
+        assert 'id="canvas-viewport"' in page
+        assert 'data-action="add-request"' in page
+        assert 'id="minimap"' in page
+        assert 'class="generation-dock"' not in page
+        assert f"/api/projects/{project_id}/canvas" not in page
+        assert "IMAGE_HUB_CSRF" in page
+
+
+def test_canvas_payload_preserves_nodes_edges_viewport_and_draft():
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "完整画布状态")
+        canvas = {
+            "viewport": {"x": -120, "y": 45, "zoom": 1.25},
+            "nodes": [
+                {"id": "ref", "kind": "reference_image", "x": 1, "y": 2},
+                {"id": "request", "kind": "generation_request", "referenceIds": ["ref"]},
+            ],
+            "edges": [{"id": "input-ref-request", "from": "ref", "to": "request"}],
+            "draft": {"prompt": "不可覆盖的草稿"},
+            "referenceOrder": ["ref"],
+        }
+        response = client.put(
+            f"/api/projects/{project_id}/canvas",
+            json=canvas,
+            headers={"X-CSRF-Token": token},
+        )
+        assert response.status_code == 200
+        assert client.get(f"/api/projects/{project_id}/canvas").json()["state"] == canvas
 
 
 def test_mutations_require_csrf(monkeypatch):
