@@ -1,63 +1,55 @@
-# AI Image Hub V1 最终浏览器验收报告
+# AI Image Hub V1 精度画布 UI 最终浏览器验收报告
 
 ## 执行摘要
 
-- 正式站：52 项浏览器断言通过。
-- 静态 Demo：36 项浏览器断言通过。
-- 合计：88 项浏览器断言通过。
-- 最终未解决问题：0（Critical 0 / High 0 / Medium 0 / Low 0）。
-- 付费 Provider 调用：0。正式站 Worker 已关闭，全部 4 次生成提交、轮询、结果与 artifact 均在浏览器层使用虚构响应拦截；Demo 仅执行本地虚构生成。
+- 最终结论：PASS / SHIP。
+- 自动化浏览器场景：2/2 通过；正式站与静态 Demo 均使用 Playwright Chromium 实测。
+- 最终未解决的发布阻塞问题：0（Critical 0 / High 0 / Medium 0）。
+- 付费 Provider 调用：0。正式站 Worker 明确关闭，模型不可用态通过浏览器内本地状态构造；Demo 仅执行本地虚构生成。
+- 对比结论：顶部 chrome、浮动工具条、请求面板、结果节点和 History 均从工程原型视觉收敛到克制中性的桌面创作工具。
 
 ## 测试环境
 
-- 使用独立临时 SQLite、独立 storage 与虚构账号数据运行正式站。
-- 使用独立本地静态服务器运行 Demo。
-- Playwright Chromium，无头模式，视口 1440 × 960。
-- 所有证据只包含虚构或本地数据；不包含凭据、供应商路由、原始上游模型 ID 或任务文件内容。
+- 正式站：`127.0.0.1:5191`，独立临时 SQLite 与 storage，虚构管理员账号，`IMAGE_HUB_WORKER_ENABLED=false`。
+- 静态 Demo：`127.0.0.1:5192`，所有图片和交互均为同源本地虚构数据。
+- 浏览器：Playwright Chromium 153，无头模式。
+- 视口：1440 × 960、1024 × 900、768 × 900、375 × 812。
+- 网络与控制台：页面 JavaScript error 0；非同源资源请求 0；四个目标宽度文档横向溢出 0。
 
-## 覆盖范围与结果
+## 视觉与交互验收
 
-1. 项目直接打开轻量画布；不存在 Agent、营销主页、固定侧栏或内置 lightbox：通过。
-2. 横图与竖图上传后保持正确固有比例；普通与缩放状态下节点拖动正确：通过。
-3. 图片连到空白画布可新建请求，连到已有请求可追加输入：通过。
-4. 两个请求分别保存独立、有序的输入；重排与移除同步更新编号和连线：通过。
-5. 无效释放、Escape 与 pointercancel 不改变输入；缩放与平移后坐标正确：通过。
-6. 无参考图可创建文生图请求：通过。
-7. 平台/模型和比例/分辨率组合选择器严格遵循 capability：通过。
-8. 默认选择第一个启用 profile；没有启用 profile 时显示不可用状态并禁用生成：通过。
-9. 4 次拦截提交生成 4 个独立结果节点与 4 个唯一幂等键：通过。
-10. 成功结果可继续连接到请求：通过。
-11. hover/键盘焦点可显示采用、满意、不满意控件；状态互斥并持久化：通过。
-12. artifact 打开与下载均可工作；结果上下文 hook 在刷新和评价时发出：通过。
-13. History 定位会居中且重复操作不复制结果；继续使用会创建含原提示词和结果输入的子请求：通过。
-14. 恢复后的本地上传节点明确要求重新选择，并在替换前阻止提交：通过。
-15. 管理员 API 表单接受有效虚构配置、拒绝非法 capability，响应不回显敏感路由信息：通过。
-16. 普通用户没有管理入口，直接访问管理区域被拒绝：通过。
-17. 正式站与 Demo 最终控制台 JavaScript 错误均为 0，文档无横向溢出，前端资源均同源：通过。
+1. 顶栏实测高度 50px；项目名保持上下文主次，保存、历史、管理、退出降为次级控制：通过。
+2. 上传、新建生图、适应画布与缩放合并为单个 8px 浮动工具条；导航与缩放采用 1.5px SVG 图标、可访问名称和 tooltip：通过。
+3. 成功图片/结果节点取消厚标题栏，图片上方不覆盖控制，动作与元数据进入 30px 底栏：通过。
+4. 生图节点宽度 350px，Prompt 为主要输入，组合选择器与数量按 8px 节奏压缩，Generate 为唯一高强调操作：通过。
+5. 画布 `#F7F7F5`、白色表面、`#171717` 主文字、shadow-as-border、中性色 chrome：通过。
+6. hover、focus-visible、disabled、dragging、drop-target、connecting、processing、success、unavailable/reselect 均有无布局位移状态：通过。
+7. “原模型已不可用”选项提供“请选择可用模型”的下一步；错误说明包含选择已启用模型/联系管理员；恢复按钮明确为“重新选择图片”：通过。
+8. 连接端口默认弱化，节点 hover/focus 与连接状态增强；连线降低对比度：通过。
+9. History 图片区域维持约 75% 视觉占比，筛选合并为单一精密工具条，元数据单行，继续使用为唯一主操作：通过。
+10. Demo 生成过程实测 queued → running → succeeded；4 个虚构结果完成，无真实 Provider 调用：通过。
+11. 结果评价控件在 hover 和键盘 focus 后可见；移动端保持可操作：通过。
+12. 1440、1024、768、375px 工具条不超出视口，页面无横向 document overflow：通过。
 
 ## 最终证据
 
-- 正式站画布：`dogfood-output/screenshots/formal-workspace.png`
-- Demo 历史：`dogfood-output/screenshots/demo-history.png`
+- 正式站画布（1440）：`dogfood-output/screenshots/formal-workspace.png`
+- 正式站画布（375）：`dogfood-output/screenshots/formal-workspace-375.png`
+- Demo 处理中：`dogfood-output/screenshots/demo-processing.png`
+- Demo History（1440）：`dogfood-output/screenshots/demo-history.png`
+- Demo History（375）：`dogfood-output/screenshots/demo-history-375.png`
+- 改造前正式站：`dogfood-output/screenshots/before-formal-workspace.png`
+- 改造前 Demo History：`dogfood-output/screenshots/before-demo-history.png`
 
-## 本轮发现并修复
+## 自动化回归
 
-### Demo History 继续使用未恢复提示词
-
-- 严重度：Medium
-- 分类：Functional
-- 实际表现：Demo 从历史结果继续使用时创建了结果输入，但子请求提示词为空。
-- 修复：请求构造函数接受继承提示词，History 继续操作传入结果的原提示词。
-- 回归结果：子请求同时包含原提示词与结果输入。
-
-### Demo 缺少 favicon 产生资源 404
-
-- 严重度：Low
-- 分类：Console
-- 实际表现：浏览器请求站点图标时产生同源 404 控制台错误。
-- 修复：加入本地 SVG favicon 并在 Demo 文档中声明。
-- 回归结果：Demo 控制台错误为 0，资源仍全部同源。
+- `ruff check src tests`：通过。
+- `pytest -q`：47 passed，3 条上游 deprecation warning。
+- `python3 -m compileall -q src tests`：通过。
+- `node --check`：`docs/demo.js`、`canvas-core.js`、`app.js`、`history.js` 全部通过。
+- `git diff --check`：通过。
+- `@google/design.md lint DESIGN.md`：0 errors；contrast warnings 0。仅有 10 条未被组件层直接引用的 token warning。
 
 ## 测试说明与限制
 
-真实 Provider 执行属于本轮明确禁止范围，因此未测试真实上游生成质量、计费、配额或供应商可用性。管理员配置验证使用虚构数据；生成链路使用浏览器拦截响应。正式站 artifact 与 Demo artifact 均为本地测试素材。Blob 本地上传在浏览器刷新后需要重新选择，是 V1 的显式安全与恢复行为。
+真实 Provider 执行属于本轮明确禁止范围，因此未测试真实上游生成质量、计费、配额或供应商可用性。正式站浏览器验收只访问本地同源应用并保持 Worker 关闭；Demo 的处理与成功结果完全由本地虚构逻辑产生。所有提交证据均不包含凭据、内部地址、真实提示词或真实上游任务数据。

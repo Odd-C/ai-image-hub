@@ -2,11 +2,6 @@
 {% block title %}登录 · AI Image Hub{% endblock %}
 {% block body %}
 <main class="login-shell">
-  <section class="login-intro">
-    <span class="eyebrow">INTERNAL CREATIVE SYSTEM</span>
-    <h1>一个入口，<br>连接所有生图平台。</h1>
-    <p>原始提示词直达模型。统一管理 Lovart、LibTV 与图像 API 的任务、结果和历史。</p>
-  </section>
   <form class="login-card" method="post" action="/login">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
     <div><span class="brand-mark">IH</span><strong>AI Image Hub</strong></div>

@@ -136,7 +136,7 @@
       const source = nodeById(id); if (!source) return '';
       return `<li draggable="true" data-input-id="${id}" data-request-id="${node.id}"><span class="input-index">图${index + 1}</span><img src="${escapeHtml(source.src || '')}" alt=""><span class="drag-label">拖动排序</span><button type="button" data-remove-input="${id}" aria-label="移除图${index + 1}">×</button></li>`;
     }).join('');
-    const unavailableOption = !profile && node.profileId ? `<option value="${escapeHtml(node.profileId)}" selected disabled>原模型已不可用</option>` : '';
+    const unavailableOption = !profile && node.profileId ? `<option value="${escapeHtml(node.profileId)}" selected disabled>原模型已不可用（请选择可用模型）</option>` : '';
     const modelOptions = unavailableOption + models.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === node.profileId ? 'selected' : ''} ${item.enabled ? '' : 'disabled'}>${escapeHtml(providerNames[item.provider] || item.provider)} · ${escapeHtml(item.label)}${item.enabled ? '' : '（未配置）'}</option>`).join('');
     const comboOptions = combos(profile).map(item => `<option value="${item.value}" ${item.ratio === node.ratio && item.resolution === node.resolution ? 'selected' : ''}>${item.ratio} · ${item.resolution}</option>`).join('');
     const quality = profile?.qualities?.length > 1 ? `<details class="more-settings"><summary>更多设置</summary><label>质量<select data-field="quality">${profile.qualities.map(value => `<option ${value === node.quality ? 'selected' : ''}>${escapeHtml(value)}</option>`).join('')}</select></label></details>` : '';
@@ -164,7 +164,7 @@
   function mediaMarkup(node) {
     if (node.type === 'image') {
       if (node.needsReselect || (node.localOnly && !localFiles.has(node.id))) {
-        return '<div class="result-state upload-missing"><strong>需要重新选择图片</strong><small>浏览器刷新后无法恢复本地文件内容</small><button type="button" data-reselect-image>重新选择</button></div>';
+        return '<div class="result-state upload-missing"><strong>需要重新选择图片</strong><small>浏览器刷新后无法恢复本地文件内容</small><button type="button" data-reselect-image>重新选择图片</button></div>';
       }
       return `<img src="${escapeHtml(node.src || '')}" alt="${escapeHtml(node.name || '参考图片')}">`;
     }
@@ -174,11 +174,13 @@
 
   function imageMarkup(node) {
     const result = node.type === 'generation_result';
-    const actions = result ? `<footer class="result-footer"><span>${escapeHtml((providerNames[node.provider] || node.provider || '') + (node.modelLabel ? ` · ${node.modelLabel}` : ''))}</span><div>${node.artifactUrl ? `<a href="${escapeHtml(node.artifactUrl)}" target="_blank" rel="noopener">打开原图</a><a href="${escapeHtml(node.artifactUrl)}?download=true" download>下载</a>` : ''}${node.canRetry ? '<button type="button" data-retry>安全重试</button>' : ''}</div></footer>${sentimentMarkup(node)}` : '';
+    const resultLabel = (providerNames[node.provider] || node.provider || '生成结果') + (node.modelLabel ? ` · ${node.modelLabel}` : '');
+    const footer = result
+      ? `<footer class="image-node-bar result-footer drag-handle"><span title="${escapeHtml(resultLabel)}">${escapeHtml(resultLabel)}</span><div>${node.artifactUrl ? `<a href="${escapeHtml(node.artifactUrl)}" target="_blank" rel="noopener">打开</a><a href="${escapeHtml(node.artifactUrl)}?download=true" download>下载</a>` : ''}${node.canRetry ? '<button type="button" data-retry>安全重试</button>' : ''}<button type="button" data-delete-node aria-label="从画布移除">×</button></div></footer>${sentimentMarkup(node)}`
+      : `<footer class="image-node-bar drag-handle"><span title="${escapeHtml(node.name || '参考图片')}">${escapeHtml(node.name || '参考图片')}</span><button type="button" data-delete-node aria-label="从画布移除">×</button></footer>`;
     const canConnect = node.type === 'image' || node.status === 'succeeded';
     return `<article class="canvas-node image-node ${result ? 'result-node' : ''} ${state.selectedId === node.id ? 'selected' : ''}" data-node-id="${node.id}" data-node-type="${node.type}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px">
-      <header class="image-node-bar drag-handle"><span>${result ? '生成结果' : escapeHtml(node.name || '参考图片')}</span><button type="button" data-delete-node aria-label="从画布移除">×</button></header>
-      <div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${mediaMarkup(node)}</div>${actions}
+      <div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${mediaMarkup(node)}</div>${footer}
       ${canConnect ? '<button class="output-port" type="button" aria-label="从这张图片创建连接" title="拖动连接到生图器"></button>' : ''}
     </article>`;
   }
@@ -240,15 +242,25 @@
     input.click();
   }
 
-  function cancelConnection() { if (!state.connecting) return; state.connecting = null; renderLinks(); }
+  function clearDropTargets() { $$('.request-node.drop-target').forEach(node => node.classList.remove('drop-target')); }
+  function cancelConnection() {
+    if (!state.connecting) return;
+    state.connecting = null;
+    $('.canvas-shell')?.classList.remove('connecting');
+    clearDropTargets();
+    renderLinks();
+  }
   function beginConnection(event, node) {
     event.preventDefault(); event.stopPropagation();
     const start = nodeCenter(node, 'right'); state.connecting = {sourceId: node.id, pointerId: event.pointerId, start, current:start};
+    $('.canvas-shell')?.classList.add('connecting');
     event.currentTarget.setPointerCapture?.(event.pointerId); renderLinks();
   }
   function finishConnection(event) {
     if (!state.connecting || event.pointerId !== state.connecting.pointerId) return;
     const connection = state.connecting; state.connecting = null;
+    $('.canvas-shell')?.classList.remove('connecting');
+    clearDropTargets();
     const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.request-node');
     if (target) addInput(target.dataset.nodeId, connection.sourceId);
     else {
@@ -263,14 +275,27 @@
     if (event.button !== 0 || event.target.closest('button,input,textarea,select,a,summary,.output-port,.input-port')) return;
     event.preventDefault(); event.stopPropagation();
     drag = {id:node.id, pointerId:event.pointerId, startX:event.clientX, startY:event.clientY, x:node.x, y:node.y};
+    event.currentTarget.closest('.canvas-node')?.classList.add('dragging');
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
   function movePointer(event) {
-    if (state.connecting && event.pointerId === state.connecting.pointerId) { state.connecting.current = worldPoint(event.clientX, event.clientY); renderLinks(); return; }
+    if (state.connecting && event.pointerId === state.connecting.pointerId) {
+      state.connecting.current = worldPoint(event.clientX, event.clientY);
+      clearDropTargets();
+      document.elementFromPoint(event.clientX, event.clientY)?.closest('.request-node')?.classList.add('drop-target');
+      renderLinks(); return;
+    }
     if (drag && event.pointerId === drag.pointerId) { const node=nodeById(drag.id); node.x=drag.x+(event.clientX-drag.startX)/state.viewport.zoom; node.y=drag.y+(event.clientY-drag.startY)/state.viewport.zoom; const el=$(`[data-node-id="${node.id}"]`); if(el){el.style.left=`${node.x}px`;el.style.top=`${node.y}px`;} renderLinks(); return; }
     if (pan && event.pointerId === pan.pointerId) { state.viewport.x=pan.x+event.clientX-pan.startX; state.viewport.y=pan.y+event.clientY-pan.startY; applyViewport(); }
   }
-  function endPointer(event) { if (state.connecting) finishConnection(event); if (drag && event.pointerId===drag.pointerId){drag=null;scheduleSave();} if(pan&&event.pointerId===pan.pointerId){pan=null;scheduleSave();} }
+  function endPointer(event) {
+    if (state.connecting) finishConnection(event);
+    if (drag && event.pointerId === drag.pointerId) {
+      $(`[data-node-id="${drag.id}"]`)?.classList.remove('dragging');
+      drag = null; scheduleSave();
+    }
+    if (pan && event.pointerId === pan.pointerId) { pan = null; scheduleSave(); }
+  }
 
   function reorderInput(requestId, sourceId, beforeId) {
     const request=nodeById(requestId); if(!request) return;
@@ -380,7 +405,7 @@
     viewport.addEventListener('wheel',event=>{event.preventDefault();zoomAt(state.viewport.zoom*(event.deltaY<0?1.08:.92),event.clientX,event.clientY);},{passive:false});
     viewport.addEventListener('dblclick',event=>{if(event.target.closest('.canvas-node,.canvas-toolbar'))return;const p=worldPoint(event.clientX,event.clientY);addRequest(p.x,p.y);});
     viewport.addEventListener('pointerdown',event=>{const nodeEl=event.target.closest('.canvas-node');const node=nodeEl&&nodeById(nodeEl.dataset.nodeId);if(event.target.closest('.output-port')&&node)return beginConnection(event,node);if(node&&event.target.closest('.drag-handle'))return startNodeDrag(event,node);if(event.target===viewport||event.target.closest('.canvas-world')&&!node){pan={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,x:state.viewport.x,y:state.viewport.y};viewport.setPointerCapture?.(event.pointerId);}});
-    viewport.addEventListener('pointermove',movePointer);viewport.addEventListener('pointerup',endPointer);viewport.addEventListener('pointercancel',event=>{cancelConnection();if(drag&&drag.pointerId===event.pointerId)drag=null;if(pan&&pan.pointerId===event.pointerId)pan=null;});
+    viewport.addEventListener('pointermove',movePointer);viewport.addEventListener('pointerup',endPointer);viewport.addEventListener('pointercancel',event=>{cancelConnection();if(drag&&drag.pointerId===event.pointerId){$(`[data-node-id="${drag.id}"]`)?.classList.remove('dragging');drag=null;}if(pan&&pan.pointerId===event.pointerId)pan=null;});
     document.addEventListener('keydown',event=>{if(event.key==='Escape')cancelConnection();});
     $('#canvas-nodes').addEventListener('input',event=>{const el=event.target.closest('.canvas-node');const node=el&&nodeById(el.dataset.nodeId);if(!node)return;if(event.target.dataset.field==='prompt')node.prompt=event.target.value;scheduleSave();});
     $('#canvas-nodes').addEventListener('change',event=>{const el=event.target.closest('.canvas-node');const node=el&&nodeById(el.dataset.nodeId);if(!node)return;const field=event.target.dataset.field;if(field==='profileId'){const old=comboValue(node.ratio,node.resolution);node.profileId=event.target.value;const profile=profileById(node.profileId);const valid=combos(profile);const chosen=valid.find(item=>item.value===old)||valid[0];node.ratio=chosen?.ratio||'1:1';node.resolution=chosen?.resolution||'2K';node.quality=profile?.qualities?.includes(node.quality)?node.quality:(profile?.qualities?.[0]||'standard');render();if(!valid.some(item=>item.value===old))toast('已切换为该模型支持的默认尺寸');}else if(field==='combo'){[node.ratio,node.resolution]=event.target.value.split('|');}else if(field==='count')node.count=Number(event.target.value);else if(field==='quality')node.quality=event.target.value;scheduleSave();});

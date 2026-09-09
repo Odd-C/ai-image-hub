@@ -26,9 +26,9 @@
     <button class="tool-button primary-tool" id="add-request" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>新建生图</span></button>
     <span class="tool-divider"></span>
     <button class="tool-button icon-only" id="fit-view" type="button" aria-label="适应内容" title="适应内容"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg></button>
-    <button class="tool-button icon-only" id="zoom-out" type="button" aria-label="缩小" title="缩小">−</button>
-    <button class="zoom-label" id="zoom-reset" type="button">100%</button>
-    <button class="tool-button icon-only" id="zoom-in" type="button" aria-label="放大" title="放大">＋</button>
+    <button class="tool-button icon-only" id="zoom-out" type="button" aria-label="缩小" title="缩小"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M8 11h6m2.2 5.2L21 21"/></svg></button>
+    <button class="zoom-label" id="zoom-reset" type="button" aria-label="重置缩放" title="重置为 100%">100%</button>
+    <button class="tool-button icon-only" id="zoom-in" type="button" aria-label="放大" title="放大"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M8 11h6m-3-3v6m5.2 2.2L21 21"/></svg></button>
   </div>
   <section class="canvas-viewport" id="canvas-viewport" tabindex="0" aria-label="项目创作画布">
     <div class="canvas-world" id="canvas-world">
@@ -49,5 +49,5 @@ window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }};
 window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};
 </script>
 <script src="/static/canvas-core.js?v=1" defer></script>
-<script src="/static/app.js?v=4" defer></script>
+<script src="/static/app.js?v=5" defer></script>
 {% endblock %}
