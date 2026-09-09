@@ -180,6 +180,20 @@ def test_workspace_is_canvas_first_and_keeps_security_contract():
         assert "IMAGE_HUB_CSRF" in page
 
 
+def test_workspace_uses_port_drag_reference_binding_contract():
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "端口拖线项目")
+        page = client.get(f"/projects/{project_id}").text
+        script = client.get("/static/app.js?v=canvas-v3").text
+        assert 'data-port="output"' in script
+        assert 'data-port="input"' in script
+        assert "connectReference" in script
+        assert "interaction.type==='link'" in script
+        assert "拖动“输出”端口到生成请求的“输入”端口" in page
+        assert "toggle-reference-mode" not in page
+
+
 def test_canvas_payload_preserves_nodes_edges_viewport_and_draft():
     with TestClient(app) as client:
         token = login(client)

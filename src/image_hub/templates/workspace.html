@@ -16,10 +16,10 @@
         <label class="tool-button" title="上传参考图片"><input id="canvas-upload" type="file" accept="image/png,image/jpeg,image/webp" multiple><span aria-hidden="true">＋</span><small>素材</small></label>
         <button class="tool-button primary-tool" data-action="add-request" title="创建生成请求"><span aria-hidden="true">◇</span><small>生成</small></button>
         <button class="tool-button" data-action="add-note" title="创建备注"><span aria-hidden="true">T</span><small>备注</small></button>
-        <button class="tool-button reference-tool" data-action="toggle-reference-mode" aria-pressed="false" title="选择参考模式"><span aria-hidden="true">1…</span><small>选参考</small></button>
+
         <button class="tool-button" data-action="delete-focused" title="仅从画布移除选中节点"><span aria-hidden="true">×</span><small>移除</small></button>
       </div>
-      <div class="reference-mode-tip" id="reference-mode-tip">选择参考模式 · 按 Shift 点击素材或成功结果</div>
+      <div class="reference-mode-tip visible" id="reference-mode-tip">拖动“输出”端口到生成请求的“输入”端口，绑定参考图</div>
       <div class="zoom-control"><button data-action="zoom-out" aria-label="缩小">−</button><button data-action="zoom-reset" id="canvas-zoom">100%</button><button data-action="zoom-in" aria-label="放大">＋</button><button data-action="fit-view">适应</button></div>
       <canvas class="minimap" id="minimap" width="190" height="125" aria-label="画布小地图"></canvas>
     </div>
@@ -36,5 +36,5 @@
   <div class="lightbox-caption"><p id="lightbox-prompt"></p><span id="lightbox-meta"></span></div>
 </dialog>
 <script>window.IMAGE_HUB_MODELS = {{ profiles | tojson }}; window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }}; window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};</script>
-<script src="/static/app.js?v=canvas-v2" defer></script>
+<script src="/static/app.js?v=canvas-v3" defer></script>
 {% endblock %}
