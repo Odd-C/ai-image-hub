@@ -196,6 +196,36 @@ def _locked_generation_user(request: Request, session: Session) -> User:
     return user
 
 
+def _locked_project_user(request: Request, session: Session) -> User:
+    """Serialize a user's default project names before inserting a project."""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    if session.get_bind().dialect.name == "sqlite":
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        user = session.get(User, user_id)
+    else:
+        user = session.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    return user
+
+
+def _default_project_name(session: Session, user_id: str) -> str:
+    names = set(
+        session.scalars(
+            select(Project.name).where(Project.user_id == user_id)
+        ).all()
+    )
+    base = "未命名项目"
+    if base not in names:
+        return base
+    suffix = 2
+    while f"{base} {suffix}" in names:
+        suffix += 1
+    return f"{base} {suffix}"
+
+
 @router.get("/login")
 def login_page(request: Request):
     return templates.TemplateResponse(
@@ -265,15 +295,15 @@ def projects_page(request: Request, session: Session = Depends(get_session)):
 @router.post("/projects")
 def create_project(
     request: Request,
-    name: str = Form(..., min_length=1, max_length=160),
+    name: str = Form("", max_length=160),
     csrf: str = Form(...),
     session: Session = Depends(get_session),
 ):
     require_csrf(request, csrf)
-    user = current_user(request, session)
+    user = _locked_project_user(request, session)
     clean_name = name.strip()
     if not clean_name:
-        raise HTTPException(422, "项目名称不能为空")
+        clean_name = _default_project_name(session, user.id)
     if session.scalar(
         select(Project.id).where(Project.user_id == user.id, Project.name == clean_name)
     ):

@@ -326,7 +326,18 @@
   function setSidebarCollapsed(collapsed) { const center = visibleWorldCenter(); $('#workspace-layout').classList.toggle('sidebar-collapsed', collapsed); $('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed)); $('#sidebar-collapse').setAttribute('aria-label', collapsed ? '展开项目侧栏' : '收起项目侧栏'); $('#sidebar-collapse').title = collapsed ? '展开项目侧栏' : '收起项目侧栏'; localStorage.setItem('image-hub-sidebar-collapsed', String(collapsed)); requestAnimationFrame(() => restoreWorldCenter(center)); }
   let drawerReturnFocus = null;
   function setProjectDrawer(open) { const layout = $('#workspace-layout'); const button = $('#mobile-projects-button'); if (!matchMedia('(max-width: 768px)').matches) open = false; if (open) drawerReturnFocus = document.activeElement; layout.classList.toggle('drawer-open', open); document.body.classList.toggle('project-drawer-open', open); $('#project-scrim').hidden = !open; button.setAttribute('aria-expanded', String(open)); if (open) requestAnimationFrame(() => $('.project-list-item.current', $('#project-sidebar'))?.focus()); else drawerReturnFocus?.focus?.({preventScroll: true}); scheduleLinks(); }
-  function openNewProjectDialog() { setProjectDrawer(false); const dialog = $('#new-project-dialog'); dialog.showModal(); requestAnimationFrame(() => $('input[name="name"]', dialog).focus()); }
+  function createProject() { setProjectDrawer(false); $('#quick-create-project').requestSubmit(); }
+  function openRenameProjectDialog(button) {
+    setProjectDrawer(false);
+    const dialog = $('#project-rename-dialog');
+    const form = $('form', dialog);
+    const input = $('#project-rename-name', dialog);
+    form.action = `/projects/${encodeURIComponent(button.dataset.renameProjectId)}/rename`;
+    input.value = button.dataset.renameProjectName || '';
+    dialog.showModal();
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+  }
+  function closeRenameProjectDialog() { const dialog = $('#project-rename-dialog'); if (dialog.open) dialog.close(); }
   function closeViewer() { const dialog = $('#image-viewer'); if (!dialog.open) return false; dialog.close(); const image = $('img', dialog); image.onload = null; image.removeAttribute('src'); image.removeAttribute('style'); $('.viewer-stage', dialog).classList.remove('can-pan', 'is-panning'); Object.assign(viewerState, {scale: 1, panX: 0, panY: 0, fit: true, pointerId: null}); const target = viewerState.invoker; viewerState.invoker = null; requestAnimationFrame(() => target?.isConnected && target.focus?.({preventScroll: true})); return true; }
   function closeShortcut() { $('#shortcut-popover').hidden = true; }
   function openShortcut() { closeContextMenu(); const pop = $('#shortcut-popover'); pop.hidden = false; $('[data-close-overlay]', pop).focus(); }
@@ -405,7 +416,7 @@
     document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.model-picker')) closeActivePicker(); });
     document.addEventListener('keydown', event => {
       const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
-      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#new-project-dialog').open) { $('#new-project-dialog').close(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
+      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
       if ($('#image-viewer').open) {
         if (editable) return;
         if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomViewer(viewerState.scale * 1.2); }
@@ -442,16 +453,17 @@
     $('#mobile-projects-button').addEventListener('click', () => setProjectDrawer(!$('#workspace-layout').classList.contains('drawer-open')));
     $('#project-scrim').addEventListener('click', () => setProjectDrawer(false));
     $('#sidebar-collapse').addEventListener('click', () => setSidebarCollapsed(!$('#workspace-layout').classList.contains('sidebar-collapsed')));
-    $$('[data-new-project]').forEach(button => button.addEventListener('click', openNewProjectDialog));
+    $$('[data-new-project]').forEach(button => button.addEventListener('click', createProject));
+    $$('[data-rename-project-id]').forEach(button => button.addEventListener('click', () => openRenameProjectDialog(button)));
     $('#project-sidebar').addEventListener('click', event => { if (event.target.closest('a')) setProjectDrawer(false); });
-    $$('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $('#new-project-dialog').close())); $$('[data-close-viewer]').forEach(button => button.addEventListener('click', closeViewer)); $('[data-close-overlay]').addEventListener('click', closeShortcut);
+    $$('[data-close-rename]').forEach(button => button.addEventListener('click', closeRenameProjectDialog)); $$('[data-close-viewer]').forEach(button => button.addEventListener('click', closeViewer)); $('[data-close-overlay]').addEventListener('click', closeShortcut);
     const viewerDialog = $('#image-viewer'); const viewerStage = $('.viewer-stage', viewerDialog);
     $('[data-view-zoom-out]', viewerDialog).addEventListener('click', () => zoomViewer(viewerState.scale / 1.2)); $('[data-view-zoom-in]', viewerDialog).addEventListener('click', () => zoomViewer(viewerState.scale * 1.2)); $('[data-view-fit]', viewerDialog).addEventListener('click', fitViewer); $('[data-view-actual]', viewerDialog).addEventListener('click', actualViewer);
     viewerStage.addEventListener('wheel', event => { event.preventDefault(); event.stopPropagation(); zoomViewer(viewerState.scale * (event.deltaY < 0 ? 1.12 : .89), event.clientX, event.clientY); }, {passive: false});
     viewerStage.addEventListener('pointerdown', event => { if (event.button !== 0 || !viewerStage.classList.contains('can-pan')) return; event.preventDefault(); event.stopPropagation(); Object.assign(viewerState, {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: viewerState.panX, originY: viewerState.panY}); viewerStage.classList.add('is-panning'); viewerStage.setPointerCapture?.(event.pointerId); });
     viewerStage.addEventListener('pointermove', event => { if (viewerState.pointerId !== event.pointerId) return; viewerState.panX = viewerState.originX + event.clientX - viewerState.startX; viewerState.panY = viewerState.originY + event.clientY - viewerState.startY; applyViewerTransform(); });
     const endViewerPan = event => { if (viewerState.pointerId !== event.pointerId) return; viewerState.pointerId = null; viewerStage.classList.remove('is-panning'); viewerStage.releasePointerCapture?.(event.pointerId); }; viewerStage.addEventListener('pointerup', endViewerPan); viewerStage.addEventListener('pointercancel', endViewerPan);
-    $('#new-project-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); }); viewerDialog.addEventListener('click', event => { if (event.target === event.currentTarget) closeViewer(); });
+    $('#project-rename-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeRenameProjectDialog(); }); viewerDialog.addEventListener('click', event => { if (event.target === event.currentTarget) closeViewer(); });
     $('#minimap-toggle').addEventListener('click', () => { const svg = $('#minimap-map'); svg.hidden = !svg.hidden; $('#minimap-toggle').setAttribute('aria-expanded', String(!svg.hidden)); if (!svg.hidden) updateMinimap(); });
     $('#minimap-map').addEventListener('pointerdown', event => { event.preventDefault(); minimapDrag = event.pointerId; event.currentTarget.setPointerCapture?.(event.pointerId); recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointermove', event => { if (minimapDrag === event.pointerId) recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointerup', event => { if (minimapDrag === event.pointerId) { minimapDrag = null; scheduleSave(); } });
     window.addEventListener('resize', () => { if (!matchMedia('(max-width: 768px)').matches && $('#workspace-layout').classList.contains('drawer-open')) setProjectDrawer(false); scheduleLinks(); if (viewerDialog.open) requestAnimationFrame(viewerState.fit ? fitViewer : applyViewerTransform); });

@@ -120,16 +120,22 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .project-sidebar-head button:hover, .project-sidebar-foot button:hover, .project-sidebar-foot a:hover { background: var(--hover); color: var(--ink); }
 .project-sidebar-head svg, .project-sidebar-foot svg { width: 17px; height: 17px; }
 .project-list { display: grid; align-content: start; gap: 2px; flex: 1 1 auto; min-height: 0; padding: 8px; overflow-y: auto; }
-.project-list-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 0 9px; overflow: hidden; border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 500; text-decoration: none; }
-.project-list-item:hover { background: var(--hover); color: var(--ink); }
-.project-list-item.current { background: #ececea; color: var(--ink); font-weight: 600; }
+.project-list-row { display: flex; align-items: center; min-width: 0; border-radius: 6px; }
+.project-list-row:hover, .project-list-row.current { background: var(--hover); color: var(--ink); }
+.project-list-row.current { background: #ececea; }
+.project-list-item { display: flex; align-items: center; gap: 9px; flex: 1 1 auto; min-width: 0; min-height: 36px; padding: 0 9px; overflow: hidden; border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 500; text-decoration: none; }
+.project-list-row.current .project-list-item { color: var(--ink); font-weight: 600; }
 .project-list-item svg { flex: 0 0 16px; width: 16px; height: 16px; }
 .project-list-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-rename-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 28px; margin-right: 4px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); opacity: 0; }
+.project-list-row:hover .project-rename-button, .project-list-row:focus-within .project-rename-button { opacity: 1; }
+.project-rename-button:hover, .project-rename-button:focus-visible { background: rgba(255,255,255,.74); color: var(--ink); outline: none; }
+.project-rename-button svg { width: 15px; height: 15px; }
 .project-sidebar-foot { display: grid; gap: 2px; flex: 0 0 auto; padding: 8px; border-top: 1px solid var(--line); }
 .project-sidebar-foot button, .project-sidebar-foot a { justify-content: flex-start; gap: 9px; width: 100%; padding: 0 9px; font-size: 12px; white-space: nowrap; }
 .workspace-layout.sidebar-collapsed .project-sidebar { flex-basis: 48px; width: 48px; }
 .workspace-layout.sidebar-collapsed .project-sidebar-head { justify-content: center; padding: 0; }
-.workspace-layout.sidebar-collapsed .project-sidebar-head strong, .workspace-layout.sidebar-collapsed .project-sidebar-head [data-new-project], .workspace-layout.sidebar-collapsed .project-list-item span, .workspace-layout.sidebar-collapsed .project-sidebar-foot span { display: none; }
+.workspace-layout.sidebar-collapsed .project-sidebar-head strong, .workspace-layout.sidebar-collapsed .project-sidebar-head [data-new-project], .workspace-layout.sidebar-collapsed .project-list-item span, .workspace-layout.sidebar-collapsed .project-rename-button, .workspace-layout.sidebar-collapsed .project-sidebar-foot span { display: none; }
 .workspace-layout.sidebar-collapsed .project-sidebar-head > div { display: block; }
 .workspace-layout.sidebar-collapsed #sidebar-collapse svg { transform: rotate(180deg); }
 .workspace-layout.sidebar-collapsed .project-list, .workspace-layout.sidebar-collapsed .project-sidebar-foot { padding-right: 6px; padding-left: 6px; }
@@ -400,19 +406,19 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .mini-node.generation_result { fill: #d7e8dd; }
 .mini-viewport { fill: rgba(23,23,23,.04); stroke: #171717; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
 .shortcut-popover { right: 14px; bottom: 140px; width: min(300px, calc(100vw - 28px)); }
-.shortcut-popover header, .new-project-dialog header, .image-viewer .viewer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.shortcut-popover header button, .new-project-dialog header button, .viewer-head button { width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; }
+.shortcut-popover header, .project-rename-dialog header, .image-viewer .viewer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shortcut-popover header button, .project-rename-dialog header button, .viewer-head button { width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; }
 .shortcut-popover dl { display: grid; gap: 2px; margin: 8px 0 0; }
 .shortcut-popover dl div { display: flex; justify-content: space-between; gap: 16px; padding: 5px 3px; border-top: 1px solid var(--line); }
 .shortcut-popover dt { color: var(--muted); }
 .shortcut-popover dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 dialog { border: 0; padding: 0; }
 dialog::backdrop { background: rgba(10,10,10,.64); }
-.new-project-dialog { width: min(380px, calc(100vw - 24px)); border-radius: 10px; background: var(--white); box-shadow: var(--menu-shadow); }
-.new-project-dialog form { display: grid; gap: 16px; padding: 16px; }
-.new-project-dialog label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
-.new-project-dialog input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; }
-.new-project-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }
+.project-rename-dialog { width: min(380px, calc(100vw - 24px)); border-radius: 10px; background: var(--white); box-shadow: var(--menu-shadow); }
+.project-rename-dialog form { display: grid; gap: 16px; padding: 16px; }
+.project-rename-dialog label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.project-rename-dialog input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.project-rename-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }
 .image-viewer { width: min(1180px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px)); overflow: hidden; border-radius: 10px; background: #181818; color: #fff; }
 .image-viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .image-viewer .viewer-head { min-height: 48px; padding: 6px 12px 6px 16px; border-bottom: 1px solid rgba(255,255,255,.12); }
@@ -561,6 +567,7 @@ th { color: var(--tertiary); font-size: 10px; font-weight: 500; }
   .workspace-layout.drawer-open .project-sidebar { transform: translateX(0); }
   .workspace-layout.sidebar-collapsed .project-sidebar-head { justify-content: space-between; padding: 0 8px 0 14px; }
   .workspace-layout.sidebar-collapsed .project-sidebar-head strong, .workspace-layout.sidebar-collapsed .project-sidebar-head [data-new-project], .workspace-layout.sidebar-collapsed .project-list-item span, .workspace-layout.sidebar-collapsed .project-sidebar-foot span { display: initial; }
+  .workspace-layout.sidebar-collapsed .project-rename-button { display: inline-flex; }
   .workspace-layout.sidebar-collapsed .project-sidebar-head > div { display: flex; }
   .workspace-layout.sidebar-collapsed #sidebar-collapse svg { transform: none; }
   .workspace-layout.sidebar-collapsed .project-list, .workspace-layout.sidebar-collapsed .project-sidebar-foot { padding: 8px; }
