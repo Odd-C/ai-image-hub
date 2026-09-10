@@ -1,12 +1,12 @@
-# Canvas refinement browser QA
+# Canvas usability refinement browser QA
 
 日期：2026-09-10
 
 ## 环境
 
-- Chromium 138（Playwright build 1179）
-- 正式站点：隔离 SQLite、隔离 storage、worker 关闭
-- Demo：`python3 -m http.server`，仅同源虚构素材
+- 真实 Chromium 138（Playwright build 1179）
+- 正式站点：`http://127.0.0.1:5190`，隔离 SQLite、隔离 storage、worker 关闭
+- Demo：`http://127.0.0.1:4173`，`python3 -m http.server`，仅同源虚构素材
 - 真实 Provider / 付费 API 调用：**0**
 
 ## 自动化浏览器证据
@@ -17,22 +17,26 @@
 NODE_PATH=/tmp/ai-image-hub-pw/node_modules /tmp/ai-image-hub-pw/node_modules/.bin/playwright test tests/canvas-refinement.spec.js tests/formal-canvas-refinement.spec.js --reporter=line --workers=1
 ```
 
-结果：6 passed。正式站点及 Demo 均覆盖交互主路径；两者均在 1440×960、1024×900、768×900、375×812 检查横向溢出并留存截图。
+结果：**7 passed（11.6s）**。正式站点与 Demo 均覆盖交互主路径；两者均在 1440×960、1024×900、768×900、375×812 留存安全截图。
 
-## 验证矩阵
+## 本轮重点验证
 
-1. Minimap：节点数/可见区域来自实时布局；点击重定位；375px 初始收起且“导航”按钮可展开。
-2. 项目：使用正式 `/projects` 表单创建，切换后节点/视口独立；Demo 使用独立 localStorage 项目对象。
-3. 连线：上传 3:1、1:3 图，连接输入端口；zoom 1、非 1、拖动、请求收展后，DOM 端口中心与 path 数据端点差值均断言 ≤1.5 CSS px。
-4. 拖动：节点通过 pointer 事件移动；原生 drag 仅保留输入缩略图排序。
-5. 选择/键盘：多选与多节点移动；正式站点验证 Ctrl+A/C/V、Delete；Demo 验证选择移动及快捷键帮助。
-6. 平台 · 模型：分组 listbox、禁用模型、切换模型后能力兼容规格回算。
-7. 菜单：画布/节点 context menu 命令与视口边缘 clamp。
-8. 预览：`object-fit: contain`；3:1 与 1:3 intrinsic ratio 断言通过。
-9. 大图：双击打开原生 dialog；contain、Escape 关闭、原图/下载入口存在。
-10. 详情：请求选中展开；结果选中显示锚定“生成详情”。
+1. **结果操作栏**：按钮均有内联 1.5px SVG、`aria-label`、`title`；桌面命中区 ≥28×28，窄屏 ≥36×36；元数据与 action rail 无重叠；hover/focus 不改变 footer 宽高；删除危险色仅在 hover/focus；正式本地上传不显示无效下载，Demo 下载指向同源 SVG；viewer 原图地址一致。
+2. **Prompt 一次点击编辑**：先选中结果，使展开请求保持可见但未选中；单击 textarea 后首段唯一字符串完整保留，`activeElement` 为 textarea；切换模型、比例后原 textarea DOM 仍连接，继续输入无丢字。
+3. **项目侧栏**：桌面展开 224px、收起 48px；切换后 viewport 宽度恢复，world center 偏差 <1 CSS px，节点 world 坐标不变；minimap 和连线端点继续更新，端点误差 ≤1.5 CSS px。
+4. **项目隔离/新建**：正式站点复用 CSRF `POST /projects` 创建并跳转；项目链接使用既有 `/projects/{id}`；切回原项目恢复 3 个节点，第二项目保持独立。Demo 使用独立 localStorage 项目画布对象。
+5. **移动抽屉**：768×900 与 375×812 下 canvas 占满可用宽度；项目按钮打开；Escape 与 scrim 均可关闭并更新 `aria-expanded`；无 document 横向溢出。
+6. **回归保护**：minimap、端口几何、缩放、请求收展、多选/复制/粘贴/删除、context menu、模型分组、图片 contain、双击 viewer、结果详情继续通过。
+7. **安全与运行时**：console error 0、pageerror 0、资源同源、真实 Provider 调用 0。
 
-附加检查：浏览器 console/pageerror 为零；资源 origin 全部同源；无 document 横向溢出；项目恢复节点数断言通过。
+## 静态与单元门禁
+
+- 指定 `UV_CACHE_DIR=.uv-cache uv run ruff check src tests`：通过（`uv` 位于用户本地 bin）
+- Pytest：52 passed，只有 3 条第三方 deprecation warning
+- `compileall`：通过
+- Demo、canvas-core、app、history 及全部 Playwright spec `node --check`：通过
+- `git diff --check`：通过
+- `@google/design.md lint DESIGN.md`：0 errors；10 个既有未引用 token warnings，1 条 token summary
 
 ## 截图
 

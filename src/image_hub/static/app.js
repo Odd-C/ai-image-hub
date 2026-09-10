@@ -42,6 +42,12 @@
   }
   function uid(prefix) { const raw = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; return `${prefix}-${raw.replace(/[^a-z0-9]/gi, '')}`; }
   function escapeHtml(value = '') { const div = document.createElement('div'); div.textContent = String(value); return div.innerHTML; }
+  const icons = Object.freeze({
+    open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8"/><path d="M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5"/></svg>',
+    download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 19h14"/></svg>',
+    remove: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>'
+  });
+  function downloadUrl(url) { if (!url) return ''; return `${url}${url.includes('?') ? '&' : '?'}download=true`; }
   function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; window.setTimeout(() => { el.className = 'toast'; }, 2400); }
   async function responseJson(response) { const payload = await response.json().catch(() => ({})); if (response.status === 401) location.href = '/login'; if (!response.ok) throw new Error(payload.detail || '操作失败'); return payload; }
   function profileById(id) { return core.profileById(models, id); }
@@ -87,6 +93,17 @@
     }
     render();
     if (focus) requestAnimationFrame(() => $(`[data-node-id="${id}"]`)?.focus({preventScroll: true}));
+  }
+  function activateRequestInPlace(node) {
+    if (!node || node.type !== 'generation_request' || !node.expanded || (state.selectedIds.size === 1 && state.selectedIds.has(node.id))) return;
+    state.selectedIds = new Set([node.id]);
+    $$('.canvas-node').forEach(element => {
+      const selected = element.dataset.nodeId === node.id;
+      element.classList.toggle('selected', selected);
+      element.setAttribute('aria-selected', String(selected));
+      if (!selected) $('.node-details', element)?.remove();
+    });
+    scheduleLinks();
   }
   function clearSelection() { if (!state.selectedIds.size) return; state.selectedIds.clear(); render(); }
 
@@ -140,8 +157,11 @@
   }
   function imageMarkup(node) {
     const result = node.type === 'generation_result'; const label = result ? `${providerLabel(node.provider)} · ${node.modelLabel || '生成结果'}` : (node.name || '参考图片'); const available = node.artifactUrl || node.src || '';
-    const actions = result ? `<div>${available ? `<button type="button" data-open-viewer>打开</button><a href="${escapeHtml(available)}?download=true" download>下载</a>` : ''}${node.canRetry && !node.presentationProxy ? '<button type="button" data-retry>安全重试</button>' : ''}<button type="button" data-delete-node aria-label="从画布移除">×</button></div>` : `<div>${available ? '<button type="button" data-open-viewer>打开</button>' : ''}<button type="button" data-delete-node aria-label="从画布移除">×</button></div>`;
-    return `<article class="canvas-node image-node ${result ? 'result-node' : ''} ${state.selectedIds.has(node.id) ? 'selected' : ''}" data-node-id="${node.id}" data-node-type="${node.type}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${mediaMarkup(node)}</div><footer class="image-node-bar"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span>${actions}</footer>${sentimentMarkup(node)}${result ? '<button class="derived-input-port" type="button" tabindex="-1" aria-label="生成结果输入端口"></button>' : ''}${node.type === 'image' || node.status === 'succeeded' ? '<button class="output-port" type="button" aria-label="从这张图片创建连接"></button>' : ''}${detailMarkup(node)}</article>`;
+    const openAction = available ? `<button type="button" data-open-viewer aria-label="打开原图" title="打开原图">${icons.open}</button>` : '';
+    const downloadAction = result && node.artifactUrl ? `<a href="${escapeHtml(downloadUrl(node.artifactUrl))}" download aria-label="下载原图" title="下载原图">${icons.download}</a>` : '';
+    const retryAction = node.canRetry && !node.presentationProxy ? '<button class="retry-action" type="button" data-retry aria-label="安全重试" title="安全重试">重试</button>' : '';
+    const actions = `<div class="node-action-rail"><div class="file-actions">${openAction}${downloadAction}${retryAction}</div><div class="remove-actions"><button type="button" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></div>`;
+    return `<article class="canvas-node image-node ${result ? 'result-node' : ''} ${state.selectedIds.has(node.id) ? 'selected' : ''}" data-node-id="${node.id}" data-node-type="${node.type}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${mediaMarkup(node)}</div><footer class="image-node-bar result-footer"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span>${actions}</footer>${sentimentMarkup(node)}${result ? '<button class="derived-input-port" type="button" tabindex="-1" aria-label="生成结果输入端口"></button>' : ''}${node.type === 'image' || node.status === 'succeeded' ? '<button class="output-port" type="button" aria-label="从这张图片创建连接"></button>' : ''}${detailMarkup(node)}</article>`;
   }
 
   function curvePath(a, b) { const bend = Math.max(70, Math.abs(b.x - a.x) * .45); return `M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}`; }
@@ -222,7 +242,13 @@
   function fitView() { if (!state.nodes.length) { state.viewport = {x: 0, y: 0, zoom: 1}; applyViewport(); return; } const rects = nodeWorldRects(); const minX = Math.min(...rects.map(n => n.x)); const minY = Math.min(...rects.map(n => n.y)); const maxX = Math.max(...rects.map(n => n.x + n.width)); const maxY = Math.max(...rects.map(n => n.y + n.height)); const viewport = $('#canvas-viewport').getBoundingClientRect(); const zoom = Math.max(.35, Math.min(1, (viewport.width - 100) / Math.max(1, maxX - minX), (viewport.height - 100) / Math.max(1, maxY - minY))); state.viewport = {x: 50 - minX * zoom, y: 50 - minY * zoom, zoom}; applyViewport(); scheduleSave(); }
   function zoomAt(next, cx, cy) { closeContextMenu(); const rect = $('#canvas-viewport').getBoundingClientRect(); const old = state.viewport.zoom; const zoom = Math.max(.35, Math.min(1.8, next)); const px = cx - rect.left; const py = cy - rect.top; const wx = (px - state.viewport.x) / old; const wy = (py - state.viewport.y) / old; state.viewport.x = px - wx * zoom; state.viewport.y = py - wy * zoom; state.viewport.zoom = zoom; applyViewport(); scheduleSave(); }
 
-  function openViewer(node) { const url = node.artifactUrl || node.src; if (!url || !['image', 'generation_result'].includes(node.type) || (node.type === 'generation_result' && node.status !== 'succeeded')) return; const dialog = $('#image-viewer'); const image = $('img', dialog); image.src = url; image.alt = node.name || '生成结果完整预览'; $('#viewer-title').textContent = node.name || '生成结果大图'; $('[data-view-original]', dialog).href = url; $('[data-view-download]', dialog).href = `${url}${url.includes('?') ? '&' : '?'}download=true`; dialog.showModal(); }
+  function openViewer(node) { const url = node.artifactUrl || node.src; if (!url || !['image', 'generation_result'].includes(node.type) || (node.type === 'generation_result' && node.status !== 'succeeded')) return; const dialog = $('#image-viewer'); const image = $('img', dialog); image.src = url; image.alt = node.name || '生成结果完整预览'; $('#viewer-title').textContent = node.name || '生成结果大图'; $('[data-view-original]', dialog).href = url; const download = $('[data-view-download]', dialog); download.href = downloadUrl(url); download.hidden = node.type === 'image' && !node.artifactUrl; dialog.showModal(); }
+  function visibleWorldCenter() { const rect = $('#canvas-viewport').getBoundingClientRect(); return {x: (rect.width / 2 - state.viewport.x) / state.viewport.zoom, y: (rect.height / 2 - state.viewport.y) / state.viewport.zoom}; }
+  function restoreWorldCenter(center) { const rect = $('#canvas-viewport').getBoundingClientRect(); state.viewport.x = rect.width / 2 - center.x * state.viewport.zoom; state.viewport.y = rect.height / 2 - center.y * state.viewport.zoom; applyViewport(); scheduleLinks(); scheduleSave(); }
+  function setSidebarCollapsed(collapsed) { const center = visibleWorldCenter(); $('#workspace-layout').classList.toggle('sidebar-collapsed', collapsed); $('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed)); $('#sidebar-collapse').setAttribute('aria-label', collapsed ? '展开项目侧栏' : '收起项目侧栏'); $('#sidebar-collapse').title = collapsed ? '展开项目侧栏' : '收起项目侧栏'; localStorage.setItem('image-hub-sidebar-collapsed', String(collapsed)); requestAnimationFrame(() => restoreWorldCenter(center)); }
+  let drawerReturnFocus = null;
+  function setProjectDrawer(open) { const layout = $('#workspace-layout'); const button = $('#mobile-projects-button'); if (!matchMedia('(max-width: 768px)').matches) open = false; if (open) drawerReturnFocus = document.activeElement; layout.classList.toggle('drawer-open', open); document.body.classList.toggle('project-drawer-open', open); $('#project-scrim').hidden = !open; button.setAttribute('aria-expanded', String(open)); if (open) requestAnimationFrame(() => $('.project-list-item.current', $('#project-sidebar'))?.focus()); else drawerReturnFocus?.focus?.({preventScroll: true}); scheduleLinks(); }
+  function openNewProjectDialog() { setProjectDrawer(false); const dialog = $('#new-project-dialog'); dialog.showModal(); requestAnimationFrame(() => $('input[name="name"]', dialog).focus()); }
   function closeViewer() { const dialog = $('#image-viewer'); if (dialog.open) dialog.close(); $('img', dialog).removeAttribute('src'); }
   function closeShortcut() { $('#shortcut-popover').hidden = true; }
   function openShortcut() { closeContextMenu(); const pop = $('#shortcut-popover'); pop.hidden = false; $('[data-close-overlay]', pop).focus(); }
@@ -236,12 +262,32 @@
   function openContextMenu(event, node) { event.preventDefault(); closeShortcut(); activePickerId = ''; const menu = $('#context-menu'); const point = worldPoint(event.clientX, event.clientY); context = {nodeId: node?.id || '', point, focusId: node?.id || ''}; menu.innerHTML = contextItems(node).map(item => `<button type="button" role="menuitem" data-context-action="${item.action}" ${item.disabled ? 'disabled' : ''}>${item.label}</button>`).join(''); menu.hidden = false; const margin = 8; const rect = menu.getBoundingClientRect(); menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`; menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`; menu.focus(); $('button:not(:disabled)', menu)?.focus(); }
   function runContextAction(action) { const node = nodeById(context?.nodeId); const point = context?.point; if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); } else if (action === 'request') addRequest(point.x, point.y); else if (action === 'paste') pasteClipboard(point); else if (action === 'fit') fitView(); else if (action === 'shortcuts') openShortcut(); else if (node) { if (action === 'copy') { if (!state.selectedIds.has(node.id)) state.selectedIds = new Set([node.id]); copySelection(); } else if (action === 'remove') removeIds(state.selectedIds.has(node.id) ? state.selectedIds : [node.id]); else if (action === 'toggle') { node.expanded = !node.expanded; render(); scheduleSave(); } else if (action === 'open') openViewer(node); else if (action === 'download') { const a = document.createElement('a'); a.href = `${node.artifactUrl || node.src}?download=true`; a.download = ''; a.click(); } else if (action === 'derive') addRequest(node.x + node.width + 120, node.y, {inputId: node.id, parentGenerationId: node.generationId || '', profileId: node.profileId, ratio: node.parameters?.ratio, resolution: node.parameters?.resolution}); } closeContextMenu(); }
 
-  function selectProfile(node, profileId) { const old = comboValue(node.ratio, node.resolution); const profile = profileById(profileId); if (!profile?.enabled) return; node.profileId = profile.id; node.provider = profile.provider; const valid = combos(profile); const chosen = valid.find(item => item.value === old) || valid[0]; node.ratio = chosen?.ratio || '1:1'; node.resolution = chosen?.resolution || '2K'; node.quality = profile.qualities?.includes(node.quality) ? node.quality : (profile.qualities?.[0] || 'standard'); activePickerId = ''; render(); if (!valid.some(item => item.value === old)) toast('已切换为该模型支持的默认尺寸'); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-model-trigger]`)?.focus()); }
+  function setPickerOpen(node, open) {
+    if (activePickerId && activePickerId !== node.id) {
+      const old = $(`[data-node-id="${activePickerId}"]`); $('[data-model-trigger]', old)?.setAttribute('aria-expanded', 'false'); const oldMenu = $('.model-menu', old); if (oldMenu) oldMenu.hidden = true;
+    }
+    activePickerId = open ? node.id : '';
+    const root = $(`[data-node-id="${node.id}"]`); const trigger = $('[data-model-trigger]', root); const menu = $('.model-menu', root);
+    trigger?.setAttribute('aria-expanded', String(open)); if (menu) menu.hidden = !open;
+    if (open) requestAnimationFrame(() => $('[role="option"]:not(:disabled)', menu)?.focus());
+  }
+  function closeActivePicker() { if (!activePickerId) return false; const node = nodeById(activePickerId); if (node) setPickerOpen(node, false); else activePickerId = ''; return true; }
+  function selectProfile(node, profileId) {
+    const old = comboValue(node.ratio, node.resolution); const profile = profileById(profileId); if (!profile?.enabled) return;
+    node.profileId = profile.id; node.provider = profile.provider; const valid = combos(profile); const chosen = valid.find(item => item.value === old) || valid[0];
+    node.ratio = chosen?.ratio || '1:1'; node.resolution = chosen?.resolution || '2K'; node.quality = profile.qualities?.includes(node.quality) ? node.quality : (profile.qualities?.[0] || 'standard');
+    const root = $(`[data-node-id="${node.id}"]`); const trigger = $('[data-model-trigger]', root); const combo = $('[data-field="combo"]', root);
+    $('span', trigger).textContent = `${providerLabel(profile.provider)} · ${profile.label}`;
+    $$('[role="option"]', root).forEach(option => { const selected = option.dataset.profileOption === profile.id; option.setAttribute('aria-selected', String(selected)); $('b', option)?.remove(); if (selected) option.insertAdjacentHTML('beforeend', '<b aria-hidden="true">✓</b>'); });
+    if (combo) { combo.innerHTML = valid.map(item => `<option value="${item.value}" ${item.value === comboValue(node.ratio, node.resolution) ? 'selected' : ''}>${item.ratio} · ${item.resolution}</option>`).join(''); combo.value = comboValue(node.ratio, node.resolution); }
+    setPickerOpen(node, false); if (!valid.some(item => item.value === old)) toast('已切换为该模型支持的默认尺寸'); scheduleSave(); trigger?.focus({preventScroll: true});
+  }
   function activateImageNode(node) { const now = performance.now(); if (lastActivation.id === node.id && now - lastActivation.time < 430) { lastActivation = {id: '', time: 0}; openViewer(node); } else lastActivation = {id: node.id, time: now}; }
 
   document.addEventListener('DOMContentLoaded', async () => {
     try { const payload = await responseJson(await fetch(`/api/projects/${projectId}/canvas`)); importLegacy(payload.state || {}); } catch (error) { toast(error.message, true); }
     render(); await applyHistoryQuery(); startPolling(); document.fonts?.ready.then(scheduleLinks);
+    const collapsed = localStorage.getItem('image-hub-sidebar-collapsed') === 'true'; $('#workspace-layout').classList.toggle('sidebar-collapsed', collapsed); $('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed));
     if (matchMedia('(max-width: 420px)').matches) { $('#minimap-map').hidden = true; $('#minimap-toggle').setAttribute('aria-expanded', 'false'); }
     const viewport = $('#canvas-viewport');
     $('#canvas-upload').addEventListener('change', event => { const rect = viewport.getBoundingClientRect(); const point = pendingUploadPoint || worldPoint(rect.left + 180, rect.top + 150); pendingUploadPoint = null; addFiles(event.target.files, point); event.target.value = ''; });
@@ -254,8 +300,9 @@
     viewport.addEventListener('pointermove', movePointer); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { cancelConnection(); if (drag?.pointerId === event.pointerId) drag = null; if (pan?.pointerId === event.pointerId) pan = null; });
     viewport.addEventListener('contextmenu', event => { const el = event.target.closest('.canvas-node'); openContextMenu(event, el ? nodeById(el.dataset.nodeId) : null); });
     $('#canvas-nodes').addEventListener('dblclick', event => { const el = event.target.closest('.image-node'); const node = el && nodeById(el.dataset.nodeId); if (node) openViewer(node); });
+    $('#canvas-nodes').addEventListener('focusin', event => { const root = event.target.closest('.request-node.expanded'); if (root && event.target.closest('textarea,select,input,button,[role="option"],[role="combobox"]')) activateRequestInPlace(nodeById(root.dataset.nodeId)); });
     $('#canvas-nodes').addEventListener('input', event => { const node = nodeById(event.target.closest('.canvas-node')?.dataset.nodeId); if (node && event.target.dataset.field === 'prompt') { node.prompt = event.target.value; scheduleSave(); scheduleLinks(); } });
-    $('#canvas-nodes').addEventListener('change', event => { const node = nodeById(event.target.closest('.canvas-node')?.dataset.nodeId); if (!node) return; const field = event.target.dataset.field; if (field === 'combo') [node.ratio, node.resolution] = event.target.value.split('|'); else if (field === 'count') node.count = Number(event.target.value); else if (field === 'quality') node.quality = event.target.value; scheduleSave(); });
+    $('#canvas-nodes').addEventListener('change', event => { const node = nodeById(event.target.closest('.canvas-node')?.dataset.nodeId); if (!node) return; activateRequestInPlace(node); const field = event.target.dataset.field; if (field === 'combo') [node.ratio, node.resolution] = event.target.value.split('|'); else if (field === 'count') node.count = Number(event.target.value); else if (field === 'quality') node.quality = event.target.value; scheduleSave(); });
     $('#canvas-nodes').addEventListener('click', event => {
       if (suppressClick) { suppressClick = false; return; }
       const el = event.target.closest('.canvas-node'); const node = el && nodeById(el.dataset.nodeId); if (!node) return;
@@ -267,18 +314,19 @@
       else if (event.target.closest('[data-sentiment]')) setSentiment(node, event.target.closest('[data-sentiment]').dataset.sentiment, event.target.closest('[data-sentiment]'));
       else if (event.target.closest('[data-retry]')) retry(node);
       else if (event.target.closest('[data-open-viewer]')) openViewer(node);
-      else if (event.target.closest('[data-model-trigger]')) { activePickerId = activePickerId === node.id ? '' : node.id; render(); requestAnimationFrame(() => activePickerId && $(`[data-node-id="${node.id}"] [role="option"]:not(:disabled)`)?.focus()); }
+      else if (event.target.closest('[data-model-trigger]')) { activateRequestInPlace(node); setPickerOpen(node, activePickerId !== node.id); }
       else if (event.target.closest('[data-profile-option]')) selectProfile(node, event.target.closest('[data-profile-option]').dataset.profileOption);
+      else if (node.type === 'generation_request' && node.expanded && event.target.closest('textarea,select,input,button,[role="option"],[role="combobox"]')) activateRequestInPlace(node);
       else { if (event.detail === 0 || pointerSelectionId !== node.id) selectNode(node.id, event.shiftKey); pointerSelectionId = ''; if (['image', 'generation_result'].includes(node.type)) activateImageNode(node); }
     });
     let draggedInput = null; $('#canvas-nodes').addEventListener('dragstart', event => { const row = event.target.closest('[data-input-id]'); if (!row) { event.preventDefault(); return; } draggedInput = {requestId: row.dataset.requestId, sourceId: row.dataset.inputId}; event.dataTransfer.effectAllowed = 'move'; }); $('#canvas-nodes').addEventListener('dragover', event => { if (draggedInput && event.target.closest('[data-input-id]')) event.preventDefault(); }); $('#canvas-nodes').addEventListener('drop', event => { const row = event.target.closest('[data-input-id]'); if (row && draggedInput) { event.preventDefault(); reorderInput(draggedInput.requestId, draggedInput.sourceId, row.dataset.inputId); draggedInput = null; } }); $('#canvas-nodes').addEventListener('dragend', () => { draggedInput = null; });
 
     $('#context-menu').addEventListener('click', event => { const action = event.target.closest('[data-context-action]')?.dataset.contextAction; if (action) runContextAction(action); });
     $('#context-menu').addEventListener('keydown', event => { const items = $$('[role="menuitem"]:not(:disabled)', event.currentTarget); const index = items.indexOf(document.activeElement); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Home') items[0]?.focus(); else if (event.key === 'End') items.at(-1)?.focus(); });
-    document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.model-picker') && activePickerId) { activePickerId = ''; render(); } if (!event.target.closest('#project-menu,#project-switcher')) { $('#project-menu').hidden = true; $('#project-switcher').setAttribute('aria-expanded', 'false'); } });
+    document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.model-picker')) closeActivePicker(); });
     document.addEventListener('keydown', event => {
       const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node'));
-      if (event.key === 'Escape') { let closed = cancelConnection(); closed = closeContextMenu(true) || closed; if (activePickerId) { activePickerId = ''; render(); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#new-project-dialog').open) { $('#new-project-dialog').close(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
+      if (event.key === 'Escape') { let closed = cancelConnection(); closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#new-project-dialog').open) { $('#new-project-dialog').close(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
       if (editable) return;
       if (event.key === '?' ) { event.preventDefault(); openShortcut(); return; }
       if (meta && event.key.toLowerCase() === 'c' && canvasFocused) { event.preventDefault(); copySelection(); }
@@ -291,12 +339,15 @@
     });
     $('#canvas-nodes').addEventListener('keydown', event => { if (!event.target.matches('[role="option"]')) return; const items = $$('[role="option"]:not(:disabled)', event.target.closest('.model-menu')); const index = items.indexOf(event.target); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.target.click(); } });
 
-    $('#project-switcher').addEventListener('click', event => { event.stopPropagation(); const menu = $('#project-menu'); menu.hidden = !menu.hidden; event.currentTarget.setAttribute('aria-expanded', String(!menu.hidden)); if (!menu.hidden) $('[role="menuitemradio"]', menu)?.focus(); });
-    $('#project-menu').addEventListener('click', event => { if (event.target.closest('[data-new-project]')) { $('#project-menu').hidden = true; const dialog = $('#new-project-dialog'); dialog.showModal(); requestAnimationFrame(() => $('input[name="name"]', dialog).focus()); } else if (event.target.closest('a')) closeContextMenu(); });
+    $('#mobile-projects-button').addEventListener('click', () => setProjectDrawer(!$('#workspace-layout').classList.contains('drawer-open')));
+    $('#project-scrim').addEventListener('click', () => setProjectDrawer(false));
+    $('#sidebar-collapse').addEventListener('click', () => setSidebarCollapsed(!$('#workspace-layout').classList.contains('sidebar-collapsed')));
+    $$('[data-new-project]').forEach(button => button.addEventListener('click', openNewProjectDialog));
+    $('#project-sidebar').addEventListener('click', event => { if (event.target.closest('a')) setProjectDrawer(false); });
     $$('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $('#new-project-dialog').close())); $$('[data-close-viewer]').forEach(button => button.addEventListener('click', closeViewer)); $('[data-close-overlay]').addEventListener('click', closeShortcut);
     $('#new-project-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); }); $('#image-viewer').addEventListener('click', event => { if (event.target === event.currentTarget) closeViewer(); });
     $('#minimap-toggle').addEventListener('click', () => { const svg = $('#minimap-map'); svg.hidden = !svg.hidden; $('#minimap-toggle').setAttribute('aria-expanded', String(!svg.hidden)); if (!svg.hidden) updateMinimap(); });
     $('#minimap-map').addEventListener('pointerdown', event => { event.preventDefault(); minimapDrag = event.pointerId; event.currentTarget.setPointerCapture?.(event.pointerId); recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointermove', event => { if (minimapDrag === event.pointerId) recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointerup', event => { if (minimapDrag === event.pointerId) { minimapDrag = null; scheduleSave(); } });
-    window.addEventListener('resize', scheduleLinks);
+    window.addEventListener('resize', () => { if (!matchMedia('(max-width: 768px)').matches && $('#workspace-layout').classList.contains('drawer-open')) setProjectDrawer(false); scheduleLinks(); });
   });
 })();
