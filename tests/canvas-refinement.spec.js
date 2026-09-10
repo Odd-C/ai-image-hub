@@ -31,6 +31,7 @@ for (const size of sizes) {
     await page.setViewportSize(size);
     await page.goto(DEMO_URL, {waitUntil: 'networkidle'});
     await expect(page.locator('#minimap-map')).toHaveAttribute('data-node-count', '3');
+    for(const control of await page.locator('[data-id="request-a"] .request-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.width<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.width<=768?36:28)}
     await expect(page.locator('#minimap-map .mini-viewport')).toHaveCount(size.width <= 420 ? 0 : 1);
     if (size.width <= 420) {
       await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded', 'false');
@@ -43,6 +44,7 @@ for (const size of sizes) {
       await page.keyboard.press('Escape'); await expect(page.locator('#projects-button')).toHaveAttribute('aria-expanded','false');
       await page.locator('#projects-button').click(); await page.locator('#project-scrim').click({position:{x:size.width-10,y:100}}); await expect(page.locator('#projects-button')).toHaveAttribute('aria-expanded','false');
     }
+    await page.locator('[data-id="landscape"]').dblclick({force:true});await expect(page.locator('#viewer')).toBeVisible();const viewerOverflow=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);expect(viewerOverflow).toBeLessThanOrEqual(0);for(const control of await page.locator('#viewer header button,#viewer header a').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.width<=420?36:28);expect(b.height).toBeGreaterThanOrEqual(size.width<=420?36:28)}await page.keyboard.press('Escape');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
     const resources = await page.evaluate(() => performance.getEntriesByType('resource').map(r => new URL(r.name).origin));
@@ -78,9 +80,12 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
   if (await page.locator('#viewer').evaluate(el => el.open)) await page.keyboard.press('Escape');
   await page.locator('#zoom-in').click();
   deltas = await endpointDeltas(page); deltas.forEach(delta => { expect(delta.start).toBeLessThanOrEqual(1.5); expect(delta.end).toBeLessThanOrEqual(1.5); });
-  await page.locator('[data-id="request-a"] [data-toggle]').click();
-  await page.locator('[data-id="request-a"] [data-toggle]').click();
-  await page.waitForTimeout(80);
+  const toggle=request.locator('[data-toggle]'), remove=request.locator('[data-delete]');
+  for(const control of [toggle,remove]){await expect(control).toHaveAttribute('aria-label',/.+/);await expect(control).toHaveAttribute('title',/.+/);await expect(control.locator('svg')).toHaveCount(1);const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(28);expect(b.height).toBeGreaterThanOrEqual(28)}
+  const nodeCoordinates=async()=>page.evaluate(()=>JSON.parse(localStorage.getItem('image-hub-demo-v4')).projects.find(p=>p.id==='spring').nodes.map(n=>[n.id,n.x,n.y]));
+  const coordinatesBefore=await nodeCoordinates(), expandedBox=await request.boundingBox(), expandedPort=await request.locator('.in').boundingBox();
+  await toggle.click();await page.waitForTimeout(80);await expect(toggle).toHaveAttribute('aria-expanded','false');const collapsedBox=await request.boundingBox(),collapsedPort=await request.locator('.in').boundingBox();expect(collapsedBox.height).toBeLessThan(expandedBox.height);expect(collapsedPort.y).not.toBe(expandedPort.y);expect(await nodeCoordinates()).toEqual(coordinatesBefore);deltas=await endpointDeltas(page);deltas.forEach(delta=>expect(delta.end).toBeLessThanOrEqual(1.5));
+  for(let i=0;i<3;i++){await toggle.click();await toggle.click()}await toggle.click();await page.waitForTimeout(80);expect(await nodeCoordinates()).toEqual(coordinatesBefore);
   deltas = await endpointDeltas(page); deltas.forEach(delta => { expect(delta.start).toBeLessThanOrEqual(1.5); expect(delta.end).toBeLessThanOrEqual(1.5); });
 
   const fit = await page.locator('[data-id="landscape"] .frame').evaluate(el => { const img=el.querySelector('img'),r=img.getBoundingClientRect();return{fit:getComputedStyle(img).objectFit,ratio:r.width/r.height,intrinsic:img.naturalWidth/img.naturalHeight}; });
@@ -100,7 +105,7 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
   await page.keyboard.press('Escape'); await expect(menu).toBeHidden();
   await page.keyboard.press('?'); await expect(page.locator('#shortcuts')).toBeVisible(); await page.keyboard.press('Escape');
 
-  await image.dblclick(); await expect(page.locator('#viewer')).toBeVisible(); await expect(page.locator('#viewer img')).toHaveCSS('object-fit','contain'); await page.keyboard.press('Escape');
+  await image.focus();await image.dblclick();const viewer=page.locator('#viewer'),viewerImage=viewer.locator('img'),zoomLabel=page.locator('#viewer-zoom');await expect(viewer).toBeVisible();await expect(viewerImage).toHaveCSS('object-fit','contain');await expect(zoomLabel).not.toHaveText('100%');const fitBox=await viewerImage.boundingBox(),stageBox=await viewer.locator('.viewer-stage').boundingBox();expect(fitBox.width).toBeLessThanOrEqual(stageBox.width+1);expect(fitBox.height).toBeLessThanOrEqual(stageBox.height+1);await page.locator('#viewer-actual').click();await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('+');expect(parseInt(await zoomLabel.textContent())).toBeGreaterThan(100);await page.keyboard.press('-');await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('0');await expect(zoomLabel).not.toHaveText('100%');await viewer.locator('.viewer-stage').dispatchEvent('wheel',{deltaY:-100,clientX:stageBox.x+stageBox.width*.7,clientY:stageBox.y+stageBox.height*.5});const zoomed=parseInt(await zoomLabel.textContent());expect(zoomed).toBeGreaterThan(parseInt((await zoomLabel.textContent())||'0')/1.13);await page.keyboard.press('1');await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(image).toBeFocused();
   await page.locator('[data-id="result-a"]').click(); await expect(page.locator('[data-id="result-a"] .details')).toContainText('生成详情');
 
   const oldView = await page.evaluate(() => getComputedStyle(document.querySelector('#world')).transform);
