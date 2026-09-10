@@ -8,6 +8,17 @@ const sizes = [
   {name: '375x812', width: 375, height: 812},
 ];
 
+async function png(page, width, height, color) {
+  const base64 = await page.evaluate(({width,height,color}) => { const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const context=canvas.getContext('2d');context.fillStyle=color;context.fillRect(0,0,width,height);return canvas.toDataURL('image/png').split(',')[1]; }, {width,height,color});
+  return Buffer.from(base64, 'base64');
+}
+const fileEntry = (buffer, name, mimeType) => ({kind:'file',base64:buffer.toString('base64'),name,mimeType});
+async function dispatchPaste(page, selector, entries) {
+  return page.locator(selector).evaluate((target, entries) => { const transfer=new DataTransfer();for(const entry of entries){if(entry.kind==='file'){const bytes=Uint8Array.from(atob(entry.base64),char=>char.charCodeAt(0));transfer.items.add(new File([bytes],entry.name,{type:entry.mimeType}))}else transfer.setData(entry.mimeType,entry.value)}return target.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer})) }, entries);
+}
+async function dropTransfer(page, selector, entries, clientX, clientY) {
+  return page.locator(selector).evaluate((target,{entries,clientX,clientY})=>{const transfer=new DataTransfer();for(const entry of entries){if(entry.kind==='file'){const bytes=Uint8Array.from(atob(entry.base64),char=>char.charCodeAt(0));transfer.items.add(new File([bytes],entry.name,{type:entry.mimeType}))}else transfer.setData(entry.mimeType,entry.value)}return target.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer,clientX,clientY}))},{entries,clientX,clientY});
+}
 async function endpointDeltas(page) {
   return page.evaluate(() => [...document.querySelectorAll('#links path[data-end-x]')].map(path => {
     const source = document.querySelector(`[data-id="${path.classList.contains('derived') ? 'request-a' : 'landscape'}"] ${path.classList.contains('derived') ? '.request-out' : '.out'}`);
@@ -23,6 +34,8 @@ async function endpointDeltas(page) {
   }));
 }
 
+test.beforeEach(async ({page}) => { await page.addInitScript(() => { if (!sessionStorage.getItem('demo-test-state')) { localStorage.clear(); sessionStorage.setItem('demo-test-state', '1'); } }); });
+
 for (const size of sizes) {
   test(`responsive contract ${size.name}`, async ({page}) => {
     const errors = [];
@@ -32,6 +45,7 @@ for (const size of sizes) {
     await page.goto(DEMO_URL, {waitUntil: 'networkidle'});
     await expect(page.locator('#minimap-map')).toHaveAttribute('data-node-count', '3');
     for(const control of await page.locator('[data-id="request-a"] .request-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.width<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.width<=768?36:28)}
+    for(const expanded of [true,false]){const nodeBox=await page.locator('[data-id="request-a"]').boundingBox(),buttons=await page.locator('[data-id="request-a"] .request-actions button').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,cy:r.y+r.height/2}}));expect(Math.abs(buttons[0].cy-buttons[1].cy)).toBeLessThanOrEqual(.5);buttons.forEach(b=>{expect(b.x).toBeGreaterThanOrEqual(nodeBox.x-.75);expect(b.y).toBeGreaterThanOrEqual(nodeBox.y-.75);expect(b.x+b.width).toBeLessThanOrEqual(nodeBox.x+nodeBox.width+.75);expect(b.y+b.height).toBeLessThanOrEqual(nodeBox.y+nodeBox.height+.75)});expect(buttons[0].x+buttons[0].width).toBeLessThanOrEqual(buttons[1].x);if(expanded)await page.locator('[data-id="request-a"] [data-toggle]').click();}
     await expect(page.locator('#minimap-map .mini-viewport')).toHaveCount(size.width <= 420 ? 0 : 1);
     if (size.width <= 420) {
       await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded', 'false');
@@ -53,6 +67,24 @@ for (const size of sizes) {
     await page.screenshot({path: `qa/${size.name}.png`, fullPage: true});
   });
 }
+
+test('external image drop paste validation and reload lifecycle', async ({page}) => {
+  const errors=[];page.on('console',message=>{if(message.type()==='error')errors.push(message.text())});page.on('pageerror',error=>errors.push(error.message));
+  await page.setViewportSize({width:1440,height:960});await page.goto(DEMO_URL,{waitUntil:'networkidle'});
+  const viewport=page.locator('#viewport'),landscape=await png(page,600,200,'#496f5d'),portrait=await png(page,180,540,'#815f71');await page.locator('#zoom-in').click();
+  const box=await viewport.boundingBox(),drop={x:box.x+420,y:box.y+310};const expectedDrop=await page.evaluate(({x,y})=>{const r=document.querySelector('#viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#world')).transform);return{x:(x-r.left-m.e)/m.a,y:(y-r.top-m.f)/m.d}},drop);
+  const initial=await page.locator('article.node.image').count();await dropTransfer(page,'#viewport',[fileEntry(landscape,'drop-landscape.png','image/png')],drop.x,drop.y);await expect(page.locator('article.node.image')).toHaveCount(initial+1);
+  let added=page.locator('article.node.image').nth(initial),position=await added.evaluate(node=>({x:parseFloat(node.style.left),y:parseFloat(node.style.top)}));expect(Math.abs(position.x-expectedDrop.x)).toBeLessThanOrEqual(.001);expect(Math.abs(position.y-expectedDrop.y)).toBeLessThanOrEqual(.001);
+  const pointer={x:box.x+680,y:box.y+420};await page.mouse.move(pointer.x,pointer.y);await viewport.focus();const expectedPaste=await page.evaluate(({x,y})=>{const r=document.querySelector('#viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#world')).transform);return{x:(x-r.left-m.e)/m.a,y:(y-r.top-m.f)/m.d}},pointer);
+  await dispatchPaste(page,'#viewport',[fileEntry(portrait,'clipboard-portrait.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(initial+2);added=page.locator('article.node.image').nth(initial+1);position=await added.evaluate(node=>({x:parseFloat(node.style.left),y:parseFloat(node.style.top)}));expect(Math.abs(position.x-expectedPaste.x)).toBeLessThanOrEqual(.001);expect(Math.abs(position.y-expectedPaste.y)).toBeLessThanOrEqual(.001);
+  const fidelity=await page.locator('article.node.image').evaluateAll(nodes=>nodes.slice(-2).map(node=>{const image=node.querySelector('img');return{ratio:image.naturalWidth/image.naturalHeight,fit:getComputedStyle(image).objectFit}}));expect(fidelity[0].ratio).toBeCloseTo(3,4);expect(fidelity[1].ratio).toBeCloseTo(1/3,4);fidelity.forEach(item=>expect(item.fit).toBe('contain'));
+  await page.locator('article.node.image').nth(initial).click();await page.keyboard.press('Control+c');await dispatchPaste(page,'[data-id="landscape"]',[fileEntry(portrait,'system-image-wins.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(initial+3);await viewport.focus();await dispatchPaste(page,'#viewport',[]);await expect(page.locator('article.node.image')).toHaveCount(initial+4);
+  const textarea=page.locator('[data-id="request-a"] textarea');await textarea.focus();const before=await page.locator('article.node.image').count();expect(await dispatchPaste(page,'[data-id="request-a"] textarea',[{kind:'text',mimeType:'text/plain',value:'正常提示词粘贴'}])).toBeTruthy();await expect(page.locator('article.node.image')).toHaveCount(before);
+  await viewport.focus();await dropTransfer(page,'#viewport',[fileEntry(Buffer.from('<svg/>'),'bad.svg','image/svg+xml')],drop.x,drop.y);await expect(page.locator('#toast')).toContainText('仅支持 PNG、JPEG 和 WebP');await expect(page.locator('article.node.image')).toHaveCount(before);
+  await dispatchPaste(page,'#viewport',[fileEntry(landscape,'multi-landscape.png','image/png'),fileEntry(portrait,'multi-portrait.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(before+2);const pair=await page.locator('article.node.image').evaluateAll(nodes=>nodes.slice(-2).map(node=>({x:parseFloat(node.style.left),y:parseFloat(node.style.top),ratio:node.querySelector('img').naturalWidth/node.querySelector('img').naturalHeight})));expect(pair[1].x-pair[0].x).toBe(32);expect(pair[1].y-pair[0].y).toBe(32);expect(pair[0].ratio).toBeCloseTo(3,4);expect(pair[1].ratio).toBeCloseTo(1/3,4);
+  const persisted=await page.locator('article.node.image').count();await page.reload({waitUntil:'networkidle'});await expect(page.locator('article.node.image')).toHaveCount(persisted);await expect(page.locator('.upload-missing')).toHaveCount(persisted-2);
+  await viewport.focus();await dispatchPaste(page,'#viewport',[{kind:'text',mimeType:'text/plain',value:'https://example.invalid/image.png'}]);await expect(page.locator('#toast')).toContainText('暂不支持仅粘贴图片链接');await expect(page.locator('article.node.image')).toHaveCount(persisted);await dropTransfer(page,'#viewport',[{kind:'text',mimeType:'text/uri-list',value:'https://example.invalid/image.webp'}],drop.x,drop.y);await expect(page.locator('#toast')).toContainText('暂不支持仅粘贴图片链接');await expect(page.locator('article.node.image')).toHaveCount(persisted);expect(errors).toEqual([]);
+});
 
 test('geometry selection shortcuts picker context viewer and isolation', async ({page}) => {
   await page.setViewportSize({width: 1440, height: 960});

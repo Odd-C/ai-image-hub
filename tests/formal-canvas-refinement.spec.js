@@ -15,11 +15,76 @@ async function png(page, width, height, color) {
   const base64 = await page.evaluate(({width,height,color}) => { const c=document.createElement('canvas');c.width=width;c.height=height;const x=c.getContext('2d');x.fillStyle=color;x.fillRect(0,0,width,height);x.fillStyle='#fff';x.font='32px sans-serif';x.fillText(`${width}:${height}`,20,50);return c.toDataURL('image/png').split(',')[1]; }, {width,height,color});
   return Buffer.from(base64, 'base64');
 }
+async function dispatchPaste(page, selector, entries) {
+  return page.locator(selector).evaluate((target, entries) => {
+    const transfer = new DataTransfer();
+    for (const entry of entries) {
+      if (entry.kind === 'file') {
+        const bytes = Uint8Array.from(atob(entry.base64), char => char.charCodeAt(0));
+        transfer.items.add(new File([bytes], entry.name, {type: entry.mimeType}));
+      } else transfer.setData(entry.mimeType, entry.value);
+    }
+    return target.dispatchEvent(new ClipboardEvent('paste', {bubbles: true, cancelable: true, clipboardData: transfer}));
+  }, entries);
+}
+async function dropTransfer(page, selector, entries, clientX, clientY) {
+  return page.locator(selector).evaluate((target, {entries, clientX, clientY}) => {
+    const transfer = new DataTransfer();
+    for (const entry of entries) {
+      if (entry.kind === 'file') {
+        const bytes = Uint8Array.from(atob(entry.base64), char => char.charCodeAt(0));
+        transfer.items.add(new File([bytes], entry.name, {type: entry.mimeType}));
+      } else transfer.setData(entry.mimeType, entry.value);
+    }
+    return target.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: transfer, clientX, clientY}));
+  }, {entries, clientX, clientY});
+}
+const fileEntry = (buffer, name, mimeType) => ({kind: 'file', base64: buffer.toString('base64'), name, mimeType});
 async function deltas(page) {
   return page.evaluate(() => [...document.querySelectorAll('#canvas-links path[data-end-x]')].map(path => {
     const s=document.querySelector(`[data-node-id="${path.dataset.source}"] ${path.classList.contains('derived-link')?'.request-output-port':'.output-port'}`),t=document.querySelector(`[data-node-id="${path.dataset.target}"] ${path.classList.contains('derived-link')?'.derived-input-port':'.input-port'}`),v=document.querySelector('#canvas-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#canvas-world')).transform),c=e=>{const r=e.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}},a=c(s),b=c(t),p=(x,y)=>({x:v.left+m.e+x*m.a,y:v.top+m.f+y*m.d}),sp=p(+path.dataset.startX,+path.dataset.startY),ep=p(+path.dataset.endX,+path.dataset.endY);return{start:Math.hypot(sp.x-a.x,sp.y-a.y),end:Math.hypot(ep.x-b.x,ep.y-b.y)};
   }));
 }
+
+test('formal external image drop paste validation and reload lifecycle', async ({page}) => {
+  test.setTimeout(60000);
+  const errors=[];page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});page.on('pageerror',e=>errors.push(e.message));
+  await page.setViewportSize({width:1440,height:960});await login(page);await createProject(page,`正式外部图片-${Date.now()}`);
+  const viewport=page.locator('#canvas-viewport'),landscape=await png(page,600,200,'#496f5d'),portrait=await png(page,180,540,'#815f71');
+  await page.locator('#zoom-in').click();
+  const box=await viewport.boundingBox(),drop={x:box.x+420,y:box.y+310};
+  const expectedDrop=await page.evaluate(({x,y})=>{const r=document.querySelector('#canvas-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#canvas-world')).transform);return{x:(x-r.left-m.e)/m.a,y:(y-r.top-m.f)/m.d}},drop);
+  await dropTransfer(page,'#canvas-viewport',[fileEntry(landscape,'drop-landscape.png','image/png')],drop.x,drop.y);
+  await expect(page.locator('.image-node')).toHaveCount(1);
+  let positions=await page.locator('.image-node').evaluateAll(nodes=>nodes.map(n=>({x:parseFloat(n.style.left),y:parseFloat(n.style.top)})));
+  expect(Math.abs(positions[0].x-expectedDrop.x)).toBeLessThanOrEqual(.001);expect(Math.abs(positions[0].y-expectedDrop.y)).toBeLessThanOrEqual(.001);
+
+  const pointer={x:box.x+680,y:box.y+420};await page.mouse.move(pointer.x,pointer.y);await viewport.focus();
+  const expectedPaste=await page.evaluate(({x,y})=>{const r=document.querySelector('#canvas-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#canvas-world')).transform);return{x:(x-r.left-m.e)/m.a,y:(y-r.top-m.f)/m.d}},pointer);
+  await dispatchPaste(page,'#canvas-viewport',[fileEntry(portrait,'clipboard-portrait.png','image/png')]);
+  await expect(page.locator('.image-node')).toHaveCount(2);positions=await page.locator('.image-node').evaluateAll(nodes=>nodes.map(n=>({x:parseFloat(n.style.left),y:parseFloat(n.style.top)})));
+  expect(Math.abs(positions[1].x-expectedPaste.x)).toBeLessThanOrEqual(.001);expect(Math.abs(positions[1].y-expectedPaste.y)).toBeLessThanOrEqual(.001);
+  const fidelity=await page.locator('.image-node img').evaluateAll(images=>images.map(image=>({ratio:image.naturalWidth/image.naturalHeight,fit:getComputedStyle(image).objectFit})));
+  expect(fidelity[0].ratio).toBeCloseTo(3,4);expect(fidelity[1].ratio).toBeCloseTo(1/3,4);fidelity.forEach(item=>expect(item.fit).toBe('contain'));
+
+  await page.locator('.image-node').first().click();await page.keyboard.press('Control+c');
+  await dispatchPaste(page,'.image-node:first-child',[fileEntry(portrait,'system-image-wins.png','image/png')]);
+  await expect(page.locator('.image-node')).toHaveCount(3);await expect(page.locator('.image-node').last()).toContainText('system-image-wins.png');
+  await viewport.focus();await dispatchPaste(page,'#canvas-viewport',[]);await expect(page.locator('.image-node')).toHaveCount(4);
+
+  await page.locator('#add-request').click();const prompt=page.locator('.request-node textarea');await prompt.focus();const beforeTextPaste=await page.locator('.image-node').count();
+  expect(await dispatchPaste(page,'.request-node textarea',[{kind:'text',mimeType:'text/plain',value:'正常提示词粘贴'}])).toBeTruthy();await expect(page.locator('.image-node')).toHaveCount(beforeTextPaste);
+
+  await viewport.focus();await dropTransfer(page,'#canvas-viewport',[fileEntry(Buffer.from('<svg/>'),'bad.svg','image/svg+xml')],drop.x,drop.y);await expect(page.locator('#toast')).toContainText('仅支持 PNG、JPEG 和 WebP');await expect(page.locator('.image-node')).toHaveCount(beforeTextPaste);
+  await dispatchPaste(page,'#canvas-viewport',[fileEntry(landscape,'multi-landscape.png','image/png'),fileEntry(portrait,'multi-portrait.png','image/png')]);await expect(page.locator('.image-node')).toHaveCount(beforeTextPaste+2);
+  const pair=await page.locator('.image-node').evaluateAll(nodes=>nodes.slice(-2).map(n=>({x:parseFloat(n.style.left),y:parseFloat(n.style.top),aspect:n.querySelector('.image-frame').style.aspectRatio,natural:n.querySelector('img').naturalWidth/n.querySelector('img').naturalHeight})));
+  expect(pair[1].x-pair[0].x).toBe(32);expect(pair[1].y-pair[0].y).toBe(32);expect(pair[0].natural).toBeCloseTo(3,4);expect(pair[1].natural).toBeCloseTo(1/3,4);
+
+  await expect(page.locator('#save-state')).toContainText('已保存',{timeout:5000});const persisted=await page.locator('.image-node').count();await page.reload({waitUntil:'networkidle'});await expect(page.locator('.image-node')).toHaveCount(persisted);await expect(page.locator('.upload-missing')).toHaveCount(persisted);
+  await viewport.focus();await dispatchPaste(page,'#canvas-viewport',[{kind:'text',mimeType:'text/plain',value:'https://example.invalid/image.png'}]);await expect(page.locator('#toast')).toContainText('暂不支持仅粘贴图片链接');await expect(page.locator('.image-node')).toHaveCount(persisted);
+  await dropTransfer(page,'#canvas-viewport',[{kind:'text',mimeType:'text/uri-list',value:'https://example.invalid/image.webp'}],drop.x,drop.y);await expect(page.locator('#toast')).toContainText('暂不支持仅粘贴图片链接');await expect(page.locator('.image-node')).toHaveCount(persisted);
+  expect(errors).toEqual([]);
+});
 
 test('formal site canvas contract and project isolation', async ({page}) => {
   test.setTimeout(60000);
@@ -43,6 +108,6 @@ test('formal site canvas contract and project isolation', async ({page}) => {
   const center=async()=>page.evaluate(()=>{const r=document.querySelector('#canvas-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#canvas-world')).transform);return{x:(r.width/2-m.e)/m.a,y:(r.height/2-m.f)/m.d,width:r.width,nodes:[...document.querySelectorAll('.canvas-node')].map(n=>[n.dataset.nodeId,n.style.left,n.style.top])}});const c1=await center();await page.locator('#sidebar-collapse').click();await page.waitForTimeout(50);const c2=await center();expect(c2.width).toBeGreaterThan(c1.width);expect(Math.abs(c2.x-c1.x)).toBeLessThan(1);expect(Math.abs(c2.y-c1.y)).toBeLessThan(1);expect(c2.nodes).toEqual(c1.nodes);values=await deltas(page);values.forEach(v=>{expect(v.start).toBeLessThanOrEqual(1.5);expect(v.end).toBeLessThanOrEqual(1.5)});
   await page.waitForTimeout(800);const firstUrl=page.url();await page.locator('#project-sidebar [data-new-project]').last().click();await page.locator('#new-project-dialog input[name="name"]').fill(`正式画布乙-${Date.now()}`);await Promise.all([page.waitForURL(url=>url.toString()!==firstUrl),page.locator('#new-project-dialog button[type="submit"]').click()]);await expect(page.locator('.canvas-node')).toHaveCount(0);await page.locator('#add-request').click();await expect(page.locator('.canvas-node')).toHaveCount(1);await Promise.all([page.waitForURL(firstUrl),page.locator(`#project-sidebar a[href="${new URL(firstUrl).pathname}"]`).click()]);await expect(page.locator('.canvas-node')).toHaveCount(3);
   const resources=await page.evaluate(()=>performance.getEntriesByType('resource').map(r=>new URL(r.name).origin));expect(resources.every(x=>x===new URL(BASE).origin)).toBeTruthy();expect(errors).toEqual([]);
-  for (const size of [{n:'1440x960',w:1440,h:960},{n:'1024x900',w:1024,h:900},{n:'768x900',w:768,h:900},{n:'375x812',w:375,h:812}]) { await page.setViewportSize({width:size.w,height:size.h}); if(size.w<=420) await page.reload({waitUntil:'networkidle'}); await page.waitForTimeout(80);for(const control of await page.locator('.request-node .request-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.w<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.w<=768?36:28)} expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(0); if(size.w<=768){expect((await page.locator('#canvas-viewport').boundingBox()).width).toBe(size.w);await page.locator('#mobile-projects-button').click();await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','true');await page.keyboard.press('Escape');await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','false');await page.locator('#mobile-projects-button').click();await page.locator('#project-scrim').click({position:{x:size.w-8,y:80}});await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','false')} if(size.w<=420){await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded','false');await page.locator('#minimap-toggle').click();await expect(page.locator('#minimap-map')).toBeVisible()}await page.screenshot({path:`qa/formal-${size.n}.png`,fullPage:true}); }
+  for (const size of [{n:'1440x960',w:1440,h:960},{n:'1024x900',w:1024,h:900},{n:'768x900',w:768,h:900},{n:'375x812',w:375,h:812}]) { await page.setViewportSize({width:size.w,height:size.h}); if(size.w<=420) await page.reload({waitUntil:'networkidle'}); await page.waitForTimeout(80);for(const control of await page.locator('.request-node .request-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.w<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.w<=768?36:28)} const actionGeometry=await page.locator('.request-node .request-actions button').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,cy:r.y+r.height/2}})),requestBox=await page.locator('.request-node').boundingBox();expect(Math.abs(actionGeometry[0].cy-actionGeometry[1].cy)).toBeLessThanOrEqual(.5);actionGeometry.forEach(b=>{expect(b.x).toBeGreaterThanOrEqual(requestBox.x-.75);expect(b.y).toBeGreaterThanOrEqual(requestBox.y-.75);expect(b.x+b.width).toBeLessThanOrEqual(requestBox.x+requestBox.width+.75);expect(b.y+b.height).toBeLessThanOrEqual(requestBox.y+requestBox.height+.75)});expect(actionGeometry[0].x+actionGeometry[0].width).toBeLessThanOrEqual(actionGeometry[1].x); expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(0); if(size.w<=768){expect((await page.locator('#canvas-viewport').boundingBox()).width).toBe(size.w);await page.locator('#mobile-projects-button').click();await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','true');await page.keyboard.press('Escape');await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','false');await page.locator('#mobile-projects-button').click();await page.locator('#project-scrim').click({position:{x:size.w-8,y:80}});await expect(page.locator('#mobile-projects-button')).toHaveAttribute('aria-expanded','false')} if(size.w<=420){await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded','false');await page.locator('#minimap-toggle').click();await expect(page.locator('#minimap-map')).toBeVisible()}await page.screenshot({path:`qa/formal-${size.n}.png`,fullPage:true}); }
   expect(errors).toEqual([]);
 });

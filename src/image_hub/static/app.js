@@ -11,6 +11,10 @@
   const providerNames = {libtv: 'LibTV', lovart: 'Lovart', api: 'API'};
   const statusNames = {queued: '排队中', running: '生成中', succeeded: '已完成', failed: '失败', recovery_required: '需要恢复'};
   const sentimentNames = {adopted: '采用', satisfied: '满意', dissatisfied: '不满意'};
+  const acceptedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+  const maxLocalImageBytes = 30 * 1024 * 1024;
+  const imageOffset = 32;
+  const urlOnlyMessage = '暂不支持仅粘贴图片链接，请复制图片本身或下载后拖入';
   const state = {version: 4, viewport: {x: 0, y: 0, zoom: 1}, nodes: [], selectedIds: new Set(), connecting: null};
   const localFiles = new Map();
   const objectUrls = new Map();
@@ -32,6 +36,7 @@
   let escapeArmed = false;
   let suppressClick = false;
   let pointerSelectionId = '';
+  let lastCanvasPointer = null;
   const viewerState = {scale: 1, panX: 0, panY: 0, fit: true, pointerId: null, startX: 0, startY: 0, originX: 0, originY: 0, invoker: null};
 
   window.ImageHubResultActions = Object.freeze({register(handler) { if (typeof handler !== 'function') throw new TypeError('result action hook must be a function'); extensionHooks.add(handler); return () => extensionHooks.delete(handler); }});
@@ -123,7 +128,7 @@
     const outcome = core.clonePresentationNodes(canvasClipboard.nodes, canvasClipboard.selectedIds, uid, {x: target.x - minX + 24, y: target.y - minY + 24});
     outcome.clones.forEach(clone => {
       const oldId = Object.keys(outcome.idMap).find(id => outcome.idMap[id] === clone.id);
-      if (clone.type === 'image' && oldId && localFiles.has(oldId)) { localFiles.set(clone.id, localFiles.get(oldId)); clone.src = objectUrls.get(oldId) || nodeById(oldId)?.src || ''; }
+      if (clone.type === 'image' && oldId && localFiles.has(oldId)) { const file = localFiles.get(oldId); const src = URL.createObjectURL(file); localFiles.set(clone.id, file); objectUrls.set(clone.id, src); clone.src = src; clone.needsReselect = false; }
     });
     state.nodes.push(...outcome.clones); state.selectedIds = new Set(outcome.clones.map(node => node.id)); render(); scheduleSave(); toast(`已粘贴 ${outcome.clones.length} 个节点`); return true;
   }
@@ -192,13 +197,52 @@
   }
   function recenterFromMinimap(event) { if (!minimapGeometry) return; const rect = $('#minimap-map').getBoundingClientRect(); const map = {x: (event.clientX - rect.left) * 176 / rect.width, y: (event.clientY - rect.top) * 112 / rect.height}; const world = core.minimapPointToWorld(map, minimapGeometry); const viewport = $('#canvas-viewport').getBoundingClientRect(); state.viewport.x = viewport.width / 2 - world.x * state.viewport.zoom; state.viewport.y = viewport.height / 2 - world.y * state.viewport.zoom; applyViewport(); }
 
-  async function imageSize(src) { return new Promise(resolve => { const image = new Image(); image.onload = () => resolve({w: image.naturalWidth, h: image.naturalHeight}); image.onerror = () => resolve({w: 4, h: 3}); image.src = src; }); }
-  async function addFiles(files, point) { const valid = [...files].filter(file => /^image\/(png|jpeg|webp)$/.test(file.type)); for (let index = 0; index < valid.length; index += 1) { const file = valid[index]; const id = uid('image'); const src = URL.createObjectURL(file); const size = await imageSize(src); state.nodes.push({id, type: 'image', x: point.x + index * 32, y: point.y + index * 32, width: 280, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, src, name: file.name, localOnly: true, needsReselect: false}); localFiles.set(id, file); objectUrls.set(id, src); } render(); scheduleSave(); }
-  function reselectImage(node) { const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/png,image/jpeg,image/webp'; input.addEventListener('change', async () => { const file = input.files?.[0]; if (!file || !/^image\/(png|jpeg|webp)$/.test(file.type)) return; if (objectUrls.has(node.id)) URL.revokeObjectURL(objectUrls.get(node.id)); const src = URL.createObjectURL(file); const size = await imageSize(src); localFiles.set(node.id, file); objectUrls.set(node.id, src); Object.assign(node, {src, name: file.name, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, localOnly: true, needsReselect: false}); render(); scheduleSave(); }, {once: true}); input.click(); }
+  async function imageSize(src) { return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve({w: image.naturalWidth, h: image.naturalHeight}); image.onerror = () => reject(new Error('无法读取图片，请确认文件未损坏')); image.src = src; }); }
+  function transferFiles(source) {
+    const itemFiles = [...(source?.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile?.()).filter(Boolean);
+    return itemFiles.length ? itemFiles : [...(source?.files || [])];
+  }
+  function hasUrlOnlyTransfer(source) {
+    if (!source) return false;
+    const uri = source.getData?.('text/uri-list') || '';
+    const text = source.getData?.('text/plain') || '';
+    const html = source.getData?.('text/html') || '';
+    return Boolean(uri.trim() || /^https?:\/\/\S+$/i.test(text.trim()) || /<img\b[^>]*\bsrc\s*=/i.test(html));
+  }
+  async function importExternalImages(source, point, options = {}) {
+    const candidates = Array.isArray(source) ? source : transferFiles(source);
+    if (!candidates.length) {
+      if (options.warnUrl && hasUrlOnlyTransfer(source)) toast(urlOnlyMessage, true);
+      return 0;
+    }
+    const valid = [];
+    let unsupported = false; let oversized = false;
+    candidates.forEach((candidate, index) => {
+      const file = candidate instanceof File ? candidate : new File([candidate], `clipboard-image-${index + 1}`, {type: candidate.type});
+      if (!acceptedImageTypes.has(file.type.toLowerCase())) unsupported = true;
+      else if (file.size > maxLocalImageBytes) oversized = true;
+      else valid.push(file);
+    });
+    let imported = 0;
+    for (const file of valid) {
+      const id = uid('image'); const src = URL.createObjectURL(file);
+      try {
+        const size = await imageSize(src); const index = imported;
+        state.nodes.push({id, type: 'image', x: point.x + index * imageOffset, y: point.y + index * imageOffset, width: 280, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, src, name: file.name || '粘贴的图片', localOnly: true, needsReselect: false});
+        localFiles.set(id, file); objectUrls.set(id, src); imported += 1;
+      } catch (error) { URL.revokeObjectURL(src); toast(error.message, true); }
+    }
+    if (imported) { render(); scheduleSave(); }
+    if (oversized) toast('单张图片不能超过 30 MB', true);
+    else if (unsupported) toast('仅支持 PNG、JPEG 和 WebP 图片', true);
+    return imported;
+  }
+  function reselectImage(node) { const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/png,image/jpeg,image/webp'; input.addEventListener('change', async () => { const file = input.files?.[0]; if (!file) return; if (!acceptedImageTypes.has(file.type.toLowerCase())) { toast('仅支持 PNG、JPEG 和 WebP 图片', true); return; } if (file.size > maxLocalImageBytes) { toast('单张图片不能超过 30 MB', true); return; } const src = URL.createObjectURL(file); try { const size = await imageSize(src); if (objectUrls.has(node.id)) URL.revokeObjectURL(objectUrls.get(node.id)); localFiles.set(node.id, file); objectUrls.set(node.id, src); Object.assign(node, {src, name: file.name, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, localOnly: true, needsReselect: false}); render(); scheduleSave(); } catch (error) { URL.revokeObjectURL(src); toast(error.message, true); } }, {once: true}); input.click(); }
 
-  function cancelConnection() { if (!state.connecting) return false; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); $$('.request-node.drop-target').forEach(node => node.classList.remove('drop-target')); scheduleLinks(); return true; }
-  function beginConnection(event, node) { event.preventDefault(); event.stopPropagation(); const start = portWorld(node.id, '.output-port'); if (!start) return; state.connecting = {sourceId: node.id, pointerId: event.pointerId, start, current: start}; $('.canvas-shell')?.classList.add('connecting'); event.currentTarget.setPointerCapture?.(event.pointerId); scheduleLinks(); }
-  function finishConnection(event) { if (!state.connecting || event.pointerId !== state.connecting.pointerId) return; const connection = state.connecting; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.request-node'); if (target) addInput(target.dataset.nodeId, connection.sourceId); else { const invalid = document.elementFromPoint(event.clientX, event.clientY)?.closest('.canvas-node,.canvas-toolbar,.workspace-bar'); const viewport = document.elementFromPoint(event.clientX, event.clientY)?.closest('#canvas-viewport'); if (viewport && !invalid) { const p = worldPoint(event.clientX, event.clientY); const source = sourceNode(connection.sourceId); addRequest(p.x, p.y, {inputId: source.id, parentGenerationId: source.generationId || '', profileId: source.profileId, ratio: source.parameters?.ratio, resolution: source.parameters?.resolution}); } else scheduleLinks(); } }
+  function syncDraggingClass() { $('#canvas-viewport')?.classList.toggle('dragging', Boolean(drag || pan || state.connecting)); }
+  function cancelConnection() { if (!state.connecting) return false; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); $$('.request-node.drop-target').forEach(node => node.classList.remove('drop-target')); syncDraggingClass(); scheduleLinks(); return true; }
+  function beginConnection(event, node) { event.preventDefault(); event.stopPropagation(); const start = portWorld(node.id, '.output-port'); if (!start) return; state.connecting = {sourceId: node.id, pointerId: event.pointerId, start, current: start}; $('.canvas-shell')?.classList.add('connecting'); syncDraggingClass(); event.currentTarget.setPointerCapture?.(event.pointerId); scheduleLinks(); }
+  function finishConnection(event) { if (!state.connecting || event.pointerId !== state.connecting.pointerId) return; const connection = state.connecting; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); syncDraggingClass(); const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.request-node'); if (target) addInput(target.dataset.nodeId, connection.sourceId); else { const invalid = document.elementFromPoint(event.clientX, event.clientY)?.closest('.canvas-node,.canvas-toolbar,.workspace-bar'); const viewport = document.elementFromPoint(event.clientX, event.clientY)?.closest('#canvas-viewport'); if (viewport && !invalid) { const p = worldPoint(event.clientX, event.clientY); const source = sourceNode(connection.sourceId); addRequest(p.x, p.y, {inputId: source.id, parentGenerationId: source.generationId || '', profileId: source.profileId, ratio: source.parameters?.ratio, resolution: source.parameters?.resolution}); } else scheduleLinks(); } }
   function startNodeDrag(event, node) {
     if (event.button !== 0 || event.target.closest('button,input,textarea,select,a,summary,[draggable="true"]')) return;
     event.preventDefault(); event.stopPropagation();
@@ -210,17 +254,25 @@
     }
     if (!state.selectedIds.has(node.id)) selectNode(node.id, event.shiftKey, false);
     const origins = [...state.selectedIds].map(id => { const item = nodeById(id); return item && {id, x: item.x, y: item.y}; }).filter(Boolean);
-    drag = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origins, moved: false}; event.currentTarget.setPointerCapture?.(event.pointerId); origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.add('dragging'));
+    drag = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origins, moved: false}; event.currentTarget.setPointerCapture?.(event.pointerId); origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.add('dragging')); syncDraggingClass();
   }
   function movePointer(event) {
     if (state.connecting && event.pointerId === state.connecting.pointerId) { state.connecting.current = worldPoint(event.clientX, event.clientY); $$('.request-node.drop-target').forEach(node => node.classList.remove('drop-target')); document.elementFromPoint(event.clientX, event.clientY)?.closest('.request-node')?.classList.add('drop-target'); scheduleLinks(); return; }
     if (drag && event.pointerId === drag.pointerId) { const dx = (event.clientX - drag.startX) / state.viewport.zoom; const dy = (event.clientY - drag.startY) / state.viewport.zoom; if (Math.hypot(dx, dy) > 2) drag.moved = true; drag.origins.forEach(origin => { const node = nodeById(origin.id); if (!node) return; node.x = origin.x + dx; node.y = origin.y + dy; const el = $(`[data-node-id="${node.id}"]`); if (el) { el.style.left = `${node.x}px`; el.style.top = `${node.y}px`; } }); scheduleLinks(); return; }
     if (pan && event.pointerId === pan.pointerId) { const dx = event.clientX - pan.startX; const dy = event.clientY - pan.startY; if (Math.hypot(dx, dy) > 4) pan.moved = true; state.viewport.x = pan.x + dx; state.viewport.y = pan.y + dy; applyViewport(); }
   }
+  function clearPointerInteraction(pointerId) {
+    let changed = false;
+    if (drag && (pointerId == null || drag.pointerId === pointerId)) { drag.origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.remove('dragging')); drag = null; changed = true; }
+    if (pan && (pointerId == null || pan.pointerId === pointerId)) { pan = null; changed = true; }
+    syncDraggingClass();
+    return changed;
+  }
   function endPointer(event) {
     if (state.connecting) finishConnection(event);
-    if (drag && event.pointerId === drag.pointerId) { drag.origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.remove('dragging')); suppressClick = drag.moved; drag = null; scheduleSave(); }
-    if (pan && event.pointerId === pan.pointerId) { if (!pan.moved) clearSelection(); suppressClick = pan.moved; pan = null; scheduleSave(); }
+    if (drag && event.pointerId === drag.pointerId) { suppressClick = drag.moved; clearPointerInteraction(event.pointerId); scheduleSave(); }
+    if (pan && event.pointerId === pan.pointerId) { if (!pan.moved) clearSelection(); suppressClick = pan.moved; clearPointerInteraction(event.pointerId); scheduleSave(); }
+    syncDraggingClass();
   }
   function reorderInput(requestId, sourceId, beforeId) { const request = nodeById(requestId); if (!request) return; const list = request.orderedInputIds.filter(id => id !== sourceId); const target = list.indexOf(beforeId); list.splice(target < 0 ? list.length : target, 0, sourceId); request.orderedInputIds = list; render(); scheduleSave(); }
 
@@ -316,14 +368,15 @@
     const collapsed = localStorage.getItem('image-hub-sidebar-collapsed') === 'true'; $('#workspace-layout').classList.toggle('sidebar-collapsed', collapsed); $('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed));
     if (matchMedia('(max-width: 420px)').matches) { $('#minimap-map').hidden = true; $('#minimap-toggle').setAttribute('aria-expanded', 'false'); }
     const viewport = $('#canvas-viewport');
-    $('#canvas-upload').addEventListener('change', event => { const rect = viewport.getBoundingClientRect(); const point = pendingUploadPoint || worldPoint(rect.left + 180, rect.top + 150); pendingUploadPoint = null; addFiles(event.target.files, point); event.target.value = ''; });
+    $('#canvas-upload').addEventListener('change', event => { const rect = viewport.getBoundingClientRect(); const point = pendingUploadPoint || worldPoint(rect.left + 180, rect.top + 150); pendingUploadPoint = null; importExternalImages([...event.target.files], point); event.target.value = ''; });
     $('#add-request').addEventListener('click', () => { const rect = viewport.getBoundingClientRect(); const p = worldPoint(rect.left + rect.width / 2 - 175, rect.top + 140); addRequest(p.x, p.y); });
     $('[data-empty-action="request"]').addEventListener('click', () => $('#add-request').click());
     $('#fit-view').addEventListener('click', fitView); $('#zoom-in').addEventListener('click', () => zoomAt(state.viewport.zoom + .1, innerWidth / 2, innerHeight / 2)); $('#zoom-out').addEventListener('click', () => zoomAt(state.viewport.zoom - .1, innerWidth / 2, innerHeight / 2)); $('#zoom-reset').addEventListener('click', () => zoomAt(1, innerWidth / 2, innerHeight / 2));
-    viewport.addEventListener('dragover', event => { event.preventDefault(); viewport.classList.add('file-over'); }); viewport.addEventListener('dragleave', () => viewport.classList.remove('file-over')); viewport.addEventListener('drop', event => { event.preventDefault(); viewport.classList.remove('file-over'); if (event.dataTransfer.files.length) addFiles(event.dataTransfer.files, worldPoint(event.clientX, event.clientY)); });
+    viewport.addEventListener('dragover', event => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; viewport.classList.add('file-over'); }); viewport.addEventListener('dragleave', () => viewport.classList.remove('file-over')); viewport.addEventListener('drop', event => { event.preventDefault(); viewport.classList.remove('file-over'); importExternalImages(event.dataTransfer, worldPoint(event.clientX, event.clientY), {warnUrl: true}); });
     viewport.addEventListener('wheel', event => { event.preventDefault(); zoomAt(state.viewport.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY); }, {passive: false});
-    viewport.addEventListener('pointerdown', event => { closeContextMenu(); const nodeEl = event.target.closest('.canvas-node'); const node = nodeEl && nodeById(nodeEl.dataset.nodeId); if (event.target.closest('.output-port') && node) return beginConnection(event, node); if (node) return startNodeDrag(event, node); if (event.button === 0 && (event.target === viewport || event.target.closest('.canvas-world'))) { pan = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.viewport.x, y: state.viewport.y, moved: false}; viewport.setPointerCapture?.(event.pointerId); } });
-    viewport.addEventListener('pointermove', movePointer); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { cancelConnection(); if (drag?.pointerId === event.pointerId) drag = null; if (pan?.pointerId === event.pointerId) pan = null; });
+    viewport.addEventListener('pointerdown', event => { closeContextMenu(); const nodeEl = event.target.closest('.canvas-node'); const node = nodeEl && nodeById(nodeEl.dataset.nodeId); if (event.target.closest('.output-port') && node) return beginConnection(event, node); if (node) return startNodeDrag(event, node); if (event.button === 0 && (event.target === viewport || event.target.closest('.canvas-world'))) { event.preventDefault(); pan = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.viewport.x, y: state.viewport.y, moved: false}; viewport.setPointerCapture?.(event.pointerId); syncDraggingClass(); } });
+    viewport.addEventListener('pointermove', event => { lastCanvasPointer = worldPoint(event.clientX, event.clientY); movePointer(event); }); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { const wasActive = Boolean((drag && drag.pointerId === event.pointerId) || (pan && pan.pointerId === event.pointerId) || (state.connecting && state.connecting.pointerId === event.pointerId)); if (state.connecting?.pointerId === event.pointerId) cancelConnection(); clearPointerInteraction(event.pointerId); if (wasActive) scheduleSave(); });
+    viewport.addEventListener('selectstart', event => { if (drag || pan || state.connecting) event.preventDefault(); });
     viewport.addEventListener('contextmenu', event => { const el = event.target.closest('.canvas-node'); openContextMenu(event, el ? nodeById(el.dataset.nodeId) : null); });
     $('#canvas-nodes').addEventListener('dblclick', event => { const el = event.target.closest('.image-node'); const node = el && nodeById(el.dataset.nodeId); if (node) openViewer(node); });
     $('#canvas-nodes').addEventListener('focusin', event => { const root = event.target.closest('.request-node.expanded'); if (root && event.target.closest('textarea,select,input,button,[role="option"],[role="combobox"]')) activateRequestInPlace(nodeById(root.dataset.nodeId)); });
@@ -351,8 +404,8 @@
     $('#context-menu').addEventListener('keydown', event => { const items = $$('[role="menuitem"]:not(:disabled)', event.currentTarget); const index = items.indexOf(document.activeElement); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Home') items[0]?.focus(); else if (event.key === 'End') items.at(-1)?.focus(); });
     document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.model-picker')) closeActivePicker(); });
     document.addEventListener('keydown', event => {
-      const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node'));
-      if (event.key === 'Escape') { let closed = cancelConnection(); closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#new-project-dialog').open) { $('#new-project-dialog').close(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
+      const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
+      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#new-project-dialog').open) { $('#new-project-dialog').close(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
       if ($('#image-viewer').open) {
         if (editable) return;
         if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomViewer(viewerState.scale * 1.2); }
@@ -364,12 +417,25 @@
       if (editable) return;
       if (event.key === '?' ) { event.preventDefault(); openShortcut(); return; }
       if (meta && event.key.toLowerCase() === 'c' && canvasFocused) { event.preventDefault(); copySelection(); }
-      else if (meta && event.key.toLowerCase() === 'v' && canvasFocused) { event.preventDefault(); pasteClipboard(); }
       else if (meta && event.key.toLowerCase() === 'a' && canvasFocused) { event.preventDefault(); state.selectedIds = new Set(state.nodes.map(node => node.id)); render(); }
       else if ((event.key === 'Delete' || event.key === 'Backspace') && canvasFocused && state.selectedIds.size) { event.preventDefault(); removeIds(state.selectedIds); }
       else if (event.key === '0' && canvasFocused) { event.preventDefault(); fitView(); }
       else if ((event.key === '+' || event.key === '=') && canvasFocused) { event.preventDefault(); zoomAt(state.viewport.zoom + .1, innerWidth / 2, innerHeight / 2); }
       else if ((event.key === '-' || event.key === '_') && canvasFocused) { event.preventDefault(); zoomAt(state.viewport.zoom - .1, innerWidth / 2, innerHeight / 2); }
+    });
+    document.addEventListener('paste', event => {
+      if (core.isEditableTarget(event.target)) return;
+      const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
+      if (!canvasFocused) return;
+      const files = transferFiles(event.clipboardData);
+      if (files.length) {
+        event.preventDefault();
+        importExternalImages(files, lastCanvasPointer || visibleWorldCenter());
+      } else if (hasUrlOnlyTransfer(event.clipboardData)) {
+        event.preventDefault(); toast(urlOnlyMessage, true);
+      } else if (canvasClipboard?.selectedIds.length) {
+        event.preventDefault(); pasteClipboard(lastCanvasPointer || visibleWorldCenter());
+      }
     });
     $('#canvas-nodes').addEventListener('keydown', event => { if (!event.target.matches('[role="option"]')) return; const items = $$('[role="option"]:not(:disabled)', event.target.closest('.model-menu')); const index = items.indexOf(event.target); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.target.click(); } });
 
