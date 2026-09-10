@@ -31,6 +31,8 @@
   let linkFrame = 0;
   let pendingUploadPoint = null;
   let activePickerId = '';
+  let activePickerKind = '';
+  const pickerProviders = new Map();
   let context = null;
   let lastActivation = {id: '', time: 0};
   let escapeArmed = false;
@@ -52,7 +54,8 @@
     open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8"/><path d="M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5"/></svg>',
     download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 19h14"/></svg>',
     remove: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>',
-    chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>'
+    chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>',
+    close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>'
   });
   function downloadUrl(url) { if (!url) return ''; return `${url}${url.includes('?') ? '&' : '?'}download=true`; }
   function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; window.setTimeout(() => { el.className = 'toast'; }, 2400); }
@@ -133,18 +136,26 @@
     state.nodes.push(...outcome.clones); state.selectedIds = new Set(outcome.clones.map(node => node.id)); render(); scheduleSave(); toast(`已粘贴 ${outcome.clones.length} 个节点`); return true;
   }
 
+  function pickerOpen(node, kind) { return activePickerId === node.id && activePickerKind === kind; }
+  function ratioPreview(ratio) { return `<span class="ratio-preview" style="--ratio:${escapeHtml(ratio.replace(':', '/'))}" aria-hidden="true"></span>`; }
   function modelPickerMarkup(node, profile) {
     const grouped = models.reduce((map, item) => { (map[item.provider] ||= []).push(item); return map; }, {});
+    const selectedProvider = pickerProviders.get(node.id) || profile?.provider || Object.keys(grouped)[0] || '';
     const label = profile ? `${providerLabel(profile.provider)} · ${profile.label}` : '请选择平台与模型';
-    return `<div class="model-picker"><button type="button" class="model-trigger" data-model-trigger role="combobox" aria-expanded="${activePickerId === node.id}" aria-haspopup="listbox" aria-controls="models-${node.id}"><span>${escapeHtml(label)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button><div class="model-menu" id="models-${node.id}" role="listbox" ${activePickerId === node.id ? '' : 'hidden'}>${Object.entries(grouped).map(([provider, items]) => `<div class="model-group" role="group" aria-label="${escapeHtml(providerLabel(provider))}"><div class="model-group-label">${escapeHtml(providerLabel(provider))}</div>${items.map(item => `<button type="button" role="option" data-profile-option="${escapeHtml(item.id)}" aria-selected="${item.id === node.profileId}" ${item.enabled ? '' : 'disabled'}><span>${escapeHtml(item.label)}</span>${item.id === node.profileId ? '<b aria-hidden="true">✓</b>' : ''}${item.enabled ? '' : '<small>未配置</small>'}</button>`).join('')}</div>`).join('')}</div></div>`;
+    const isOpen = pickerOpen(node, 'model');
+    const visible = grouped[selectedProvider] || [];
+    return `<div class="visual-picker model-picker"><button type="button" class="selector-trigger" data-model-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="models-${node.id}"><span>${escapeHtml(label)}</span>${icons.chevron}</button><div class="selector-popover" id="models-${node.id}" role="dialog" aria-label="平台与模型" ${isOpen ? '' : 'hidden'}><header><strong>平台与模型</strong><button type="button" data-close-picker aria-label="关闭平台与模型">${icons.close}</button></header><section class="selector-section"><span>平台</span><div class="provider-chips" role="tablist" aria-label="平台">${Object.keys(grouped).map(provider => `<button type="button" role="tab" data-provider-option="${escapeHtml(provider)}" aria-selected="${provider === selectedProvider}" tabindex="${provider === selectedProvider ? '0' : '-1'}">${escapeHtml(providerLabel(provider))}</button>`).join('')}</div></section><section class="selector-section"><span>模型</span><div class="model-card-grid" role="radiogroup" aria-label="模型">${visible.map(item => `<button type="button" role="radio" data-profile-option="${escapeHtml(item.id)}" aria-checked="${item.id === node.profileId}" ${item.enabled ? '' : 'disabled'}><span>${escapeHtml(item.label)}</span><small>${item.enabled ? (item.id === node.profileId ? '已选择' : '可用') : '未配置'}</small>${item.id === node.profileId ? '<b aria-hidden="true">✓</b>' : ''}</button>`).join('')}</div></section></div></div>`;
+  }
+  function imageSettingsPickerMarkup(node, profile) {
+    const isOpen = pickerOpen(node, 'image');
+    return `<div class="visual-picker image-settings-picker"><button type="button" class="selector-trigger" data-image-settings-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="image-settings-${node.id}"><span>${escapeHtml(node.ratio)} · ${escapeHtml(node.resolution)}</span>${icons.chevron}</button><div class="selector-popover" id="image-settings-${node.id}" role="dialog" aria-label="图像设置" ${isOpen ? '' : 'hidden'}><header><strong>图像设置</strong><button type="button" data-close-picker aria-label="关闭图像设置">${icons.close}</button></header><section class="selector-section"><span>分辨率</span><div class="resolution-chips" role="radiogroup" aria-label="分辨率">${(profile?.resolutions || []).map(resolution => `<button type="button" role="radio" data-resolution-option="${escapeHtml(resolution)}" aria-checked="${resolution === node.resolution}">${escapeHtml(resolution)}</button>`).join('')}</div></section><section class="selector-section"><span>宽高比</span><div class="ratio-card-grid" role="radiogroup" aria-label="宽高比">${(profile?.ratios || []).map(ratio => `<button type="button" role="radio" data-ratio-option="${escapeHtml(ratio)}" aria-checked="${ratio === node.ratio}">${ratioPreview(ratio)}<span>${escapeHtml(ratio)}</span></button>`).join('')}</div></section></div></div>`;
   }
   function requestMarkup(node) {
     const profile = profileById(node.profileId);
     const inputRows = (node.orderedInputIds || []).map((id, index) => { const source = nodeById(id); if (!source) return ''; return `<li draggable="true" data-input-id="${id}" data-request-id="${node.id}"><span class="input-index">图${index + 1}</span><img src="${escapeHtml(source.src || source.artifactUrl || '')}" alt=""><span class="drag-label">拖动排序</span><button type="button" data-remove-input="${id}" aria-label="移除图${index + 1}">×</button></li>`; }).join('');
-    const comboOptions = combos(profile).map(item => `<option value="${item.value}" ${item.ratio === node.ratio && item.resolution === node.resolution ? 'selected' : ''}>${item.ratio} · ${item.resolution}</option>`).join('');
     const quality = profile?.qualities?.length > 1 ? `<details class="more-settings"><summary>更多设置</summary><label>质量<select data-field="quality">${profile.qualities.map(value => `<option ${value === node.quality ? 'selected' : ''}>${escapeHtml(value)}</option>`).join('')}</select></label></details>` : '';
     const availability = core.requestAvailability(profile);
-    return `<article class="canvas-node request-node ${node.expanded ? 'expanded' : ''} ${state.selectedIds.has(node.id) ? 'selected' : ''}" data-node-id="${node.id}" data-node-type="generation_request" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><button class="request-output-port" type="button" tabindex="-1" aria-label="生成结果输出端口"></button><header class="node-header"><div class="request-heading"><span>生图器</span><small>${(node.orderedInputIds || []).length} 张输入</small></div><div class="request-actions"><button type="button" data-toggle-request aria-label="${node.expanded ? '收起' : '展开'}生图器" title="${node.expanded ? '收起' : '展开'}生图器" aria-expanded="${node.expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="request-body">${inputRows ? `<ol class="request-inputs">${inputRows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}<label class="prompt-label">提示词<textarea data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></label><label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率<select data-field="combo">${comboOptions}</select></label><label>数量<select data-field="count">${[1,2,3,4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<button class="generate-button" type="button" data-generate ${availability.enabled || node.submitting ? '' : 'disabled'}>${node.submitting ? '正在提交…' : '生成图片'}</button></div></article>`;
+    return `<article class="canvas-node request-node ${node.expanded ? 'expanded' : ''} ${state.selectedIds.has(node.id) ? 'selected' : ''}" data-node-id="${node.id}" data-node-type="generation_request" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><button class="request-output-port" type="button" tabindex="-1" aria-label="生成结果输出端口"></button><header class="node-header"><div class="request-heading"><span>生图器</span><small>${(node.orderedInputIds || []).length} 张输入</small></div><div class="request-actions"><button type="button" data-toggle-request aria-label="${node.expanded ? '收起' : '展开'}生图器" title="${node.expanded ? '收起' : '展开'}生图器" aria-expanded="${node.expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="request-body">${inputRows ? `<ol class="request-inputs">${inputRows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}<label class="prompt-label">提示词<textarea data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></label><label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率${imageSettingsPickerMarkup(node, profile)}</label><label>数量<select data-field="count">${[1,2,3,4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<button class="generate-button" type="button" data-generate ${availability.enabled || node.submitting ? '' : 'disabled'}>${node.submitting ? '正在提交…' : '生成图片'}</button></div></article>`;
   }
   function sentimentMarkup(node) { if (node.status !== 'succeeded' || node.presentationProxy) return ''; return `<div class="sentiment-actions" aria-label="结果评价">${Object.entries(sentimentNames).map(([key, label]) => `<button type="button" data-sentiment="${key}" class="${node.sentiment === key ? 'selected' : ''}" aria-pressed="${node.sentiment === key}">${label}</button>`).join('')}</div>`; }
   function mediaMarkup(node) {
@@ -175,7 +186,7 @@
   function portWorld(nodeId, selector) { const port = $(`[data-node-id="${nodeId}"] ${selector}`); const viewport = $('#canvas-viewport'); if (!port || !viewport) return null; return core.rectCenterToWorld(port.getBoundingClientRect(), viewport.getBoundingClientRect(), state.viewport); }
   function renderLinksNow() {
     const lines = [];
-    requestNodes().forEach(request => (request.orderedInputIds || []).forEach((sourceId, index) => { const source = sourceNode(sourceId); const a = source && portWorld(source.id, '.output-port'); const b = portWorld(request.id, '.input-port'); if (!a || !b) return; const lx = b.x - 30 - index * 12; const ly = b.y - 10 - index * 14; lines.push(`<path class="input-link" data-source="${source.id}" data-target="${request.id}" data-order="${index + 1}" data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${curvePath(a, b)}"/><text class="input-order" x="${lx}" y="${ly}">${index + 1}</text>`); }));
+    requestNodes().forEach(request => (request.orderedInputIds || []).forEach((sourceId, index) => { const source = sourceNode(sourceId); const a = source && portWorld(source.id, '.output-port'); const b = portWorld(request.id, '.input-port'); if (!a || !b) return; lines.push(`<path class="input-link" data-source="${source.id}" data-target="${request.id}" data-order="${index + 1}" data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${curvePath(a, b)}"/>`); }));
     state.nodes.filter(node => node.type === 'generation_result' && node.requestId && nodeById(node.requestId)).forEach(result => { const a = portWorld(result.requestId, '.request-output-port'); const b = portWorld(result.id, '.derived-input-port'); if (a && b) lines.push(`<path class="derived-link" data-source="${result.requestId}" data-target="${result.id}" data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${curvePath(a, b)}"/>`); });
     if (state.connecting) lines.push(`<path class="temporary-link" d="${curvePath(state.connecting.start, state.connecting.current)}"/>`);
     $('#canvas-links').innerHTML = lines.join(''); updateMinimap();
@@ -199,8 +210,13 @@
 
   async function imageSize(src) { return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve({w: image.naturalWidth, h: image.naturalHeight}); image.onerror = () => reject(new Error('无法读取图片，请确认文件未损坏')); image.src = src; }); }
   function transferFiles(source) {
+    const files = [...(source?.files || [])];
     const itemFiles = [...(source?.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile?.()).filter(Boolean);
-    return itemFiles.length ? itemFiles : [...(source?.files || [])];
+    return [...new Set([...files, ...itemFiles])];
+  }
+  function pasteEditableTarget(target) {
+    const active = document.activeElement;
+    return Boolean(target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])') || active?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"]),dialog form'));
   }
   function hasUrlOnlyTransfer(source) {
     if (!source) return false;
@@ -338,6 +354,7 @@
     requestAnimationFrame(() => { input.focus(); input.select(); });
   }
   function closeRenameProjectDialog() { const dialog = $('#project-rename-dialog'); if (dialog.open) dialog.close(); }
+  function clearRenameProjectDialog() { const dialog = $('#project-rename-dialog'); const form = $('form', dialog); const input = $('#project-rename-name', dialog); form.action = ''; input.value = ''; input.setCustomValidity(''); }
   function closeViewer() { const dialog = $('#image-viewer'); if (!dialog.open) return false; dialog.close(); const image = $('img', dialog); image.onload = null; image.removeAttribute('src'); image.removeAttribute('style'); $('.viewer-stage', dialog).classList.remove('can-pan', 'is-panning'); Object.assign(viewerState, {scale: 1, panX: 0, panY: 0, fit: true, pointerId: null}); const target = viewerState.invoker; viewerState.invoker = null; requestAnimationFrame(() => target?.isConnected && target.focus?.({preventScroll: true})); return true; }
   function closeShortcut() { $('#shortcut-popover').hidden = true; }
   function openShortcut() { closeContextMenu(); const pop = $('#shortcut-popover'); pop.hidden = false; $('[data-close-overlay]', pop).focus(); }
@@ -351,26 +368,26 @@
   function openContextMenu(event, node) { event.preventDefault(); closeShortcut(); activePickerId = ''; const menu = $('#context-menu'); const point = worldPoint(event.clientX, event.clientY); context = {nodeId: node?.id || '', point, focusId: node?.id || ''}; menu.innerHTML = contextItems(node).map(item => `<button type="button" role="menuitem" data-context-action="${item.action}" ${item.disabled ? 'disabled' : ''}>${item.label}</button>`).join(''); menu.hidden = false; const margin = 8; const rect = menu.getBoundingClientRect(); menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`; menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`; menu.focus(); $('button:not(:disabled)', menu)?.focus(); }
   function runContextAction(action) { const node = nodeById(context?.nodeId); const point = context?.point; if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); } else if (action === 'request') addRequest(point.x, point.y); else if (action === 'paste') pasteClipboard(point); else if (action === 'fit') fitView(); else if (action === 'shortcuts') openShortcut(); else if (node) { if (action === 'copy') { if (!state.selectedIds.has(node.id)) state.selectedIds = new Set([node.id]); copySelection(); } else if (action === 'remove') removeIds(state.selectedIds.has(node.id) ? state.selectedIds : [node.id]); else if (action === 'toggle') toggleRequest(node); else if (action === 'open') openViewer(node); else if (action === 'download') { const a = document.createElement('a'); a.href = `${node.artifactUrl || node.src}?download=true`; a.download = ''; a.click(); } else if (action === 'derive') addRequest(node.x + node.width + 120, node.y, {inputId: node.id, parentGenerationId: node.generationId || '', profileId: node.profileId, ratio: node.parameters?.ratio, resolution: node.parameters?.resolution}); } closeContextMenu(); }
 
-  function setPickerOpen(node, open) {
-    if (activePickerId && activePickerId !== node.id) {
-      const old = $(`[data-node-id="${activePickerId}"]`); $('[data-model-trigger]', old)?.setAttribute('aria-expanded', 'false'); const oldMenu = $('.model-menu', old); if (oldMenu) oldMenu.hidden = true;
-    }
+  function setPickerOpen(node, kind, open) {
     activePickerId = open ? node.id : '';
-    const root = $(`[data-node-id="${node.id}"]`); const trigger = $('[data-model-trigger]', root); const menu = $('.model-menu', root);
-    trigger?.setAttribute('aria-expanded', String(open)); if (menu) menu.hidden = !open;
-    if (open) requestAnimationFrame(() => $('[role="option"]:not(:disabled)', menu)?.focus());
+    activePickerKind = open ? kind : '';
+    render();
+    if (open) requestAnimationFrame(() => $(`[data-node-id="${node.id}"] .selector-popover:not([hidden]) button:not(:disabled)`)?.focus());
   }
-  function closeActivePicker() { if (!activePickerId) return false; const node = nodeById(activePickerId); if (node) setPickerOpen(node, false); else activePickerId = ''; return true; }
+  function closeActivePicker(restore = false) {
+    if (!activePickerId) return false;
+    const node = nodeById(activePickerId); const kind = activePickerKind;
+    activePickerId = ''; activePickerKind = ''; render();
+    if (restore) requestAnimationFrame(() => $(`[data-node-id="${node?.id}"] ${kind === 'model' ? '[data-model-trigger]' : '[data-image-settings-trigger]'}`)?.focus({preventScroll: true}));
+    return true;
+  }
   function selectProfile(node, profileId) {
     const old = comboValue(node.ratio, node.resolution); const profile = profileById(profileId); if (!profile?.enabled) return;
     node.profileId = profile.id; node.provider = profile.provider; const valid = combos(profile); const chosen = valid.find(item => item.value === old) || valid[0];
     node.ratio = chosen?.ratio || '1:1'; node.resolution = chosen?.resolution || '2K'; node.quality = profile.qualities?.includes(node.quality) ? node.quality : (profile.qualities?.[0] || 'standard');
-    const root = $(`[data-node-id="${node.id}"]`); const trigger = $('[data-model-trigger]', root); const combo = $('[data-field="combo"]', root);
-    $('span', trigger).textContent = `${providerLabel(profile.provider)} · ${profile.label}`;
-    $$('[role="option"]', root).forEach(option => { const selected = option.dataset.profileOption === profile.id; option.setAttribute('aria-selected', String(selected)); $('b', option)?.remove(); if (selected) option.insertAdjacentHTML('beforeend', '<b aria-hidden="true">✓</b>'); });
-    if (combo) { combo.innerHTML = valid.map(item => `<option value="${item.value}" ${item.value === comboValue(node.ratio, node.resolution) ? 'selected' : ''}>${item.ratio} · ${item.resolution}</option>`).join(''); combo.value = comboValue(node.ratio, node.resolution); }
-    setPickerOpen(node, false); if (!valid.some(item => item.value === old)) toast('已切换为该模型支持的默认尺寸'); scheduleSave(); trigger?.focus({preventScroll: true});
+    pickerProviders.set(node.id, profile.provider); const mapped = valid.some(item => item.value === old); closeActivePicker(); if (!mapped) toast('已切换为该模型支持的默认尺寸'); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-model-trigger]`)?.focus({preventScroll: true}));
   }
+  function selectImageSetting(node, field, value) { node[field] = value; closeActivePicker(); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-image-settings-trigger]`)?.focus({preventScroll: true})); }
   function activateImageNode(node) { const now = performance.now(); if (lastActivation.id === node.id && now - lastActivation.time < 430) { lastActivation = {id: '', time: 0}; openViewer(node); } else lastActivation = {id: node.id, time: now}; }
 
   document.addEventListener('DOMContentLoaded', async () => {
@@ -404,16 +421,21 @@
       else if (event.target.closest('[data-sentiment]')) setSentiment(node, event.target.closest('[data-sentiment]').dataset.sentiment, event.target.closest('[data-sentiment]'));
       else if (event.target.closest('[data-retry]')) retry(node);
       else if (event.target.closest('[data-open-viewer]')) openViewer(node);
-      else if (event.target.closest('[data-model-trigger]')) { activateRequestInPlace(node); setPickerOpen(node, activePickerId !== node.id); }
+      else if (event.target.closest('[data-model-trigger]')) { activateRequestInPlace(node); setPickerOpen(node, 'model', !pickerOpen(node, 'model')); }
+      else if (event.target.closest('[data-image-settings-trigger]')) { activateRequestInPlace(node); setPickerOpen(node, 'image', !pickerOpen(node, 'image')); }
+      else if (event.target.closest('[data-close-picker]')) closeActivePicker(true);
+      else if (event.target.closest('[data-provider-option]')) { pickerProviders.set(node.id, event.target.closest('[data-provider-option]').dataset.providerOption); render(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-profile-option]:not(:disabled)`)?.focus()); }
       else if (event.target.closest('[data-profile-option]')) selectProfile(node, event.target.closest('[data-profile-option]').dataset.profileOption);
-      else if (node.type === 'generation_request' && node.expanded && event.target.closest('textarea,select,input,button,[role="option"],[role="combobox"]')) activateRequestInPlace(node);
+      else if (event.target.closest('[data-ratio-option]')) selectImageSetting(node, 'ratio', event.target.closest('[data-ratio-option]').dataset.ratioOption);
+      else if (event.target.closest('[data-resolution-option]')) selectImageSetting(node, 'resolution', event.target.closest('[data-resolution-option]').dataset.resolutionOption);
+      else if (node.type === 'generation_request' && node.expanded && event.target.closest('textarea,select,input,button,[role="radio"],[role="tab"]')) activateRequestInPlace(node);
       else { if (event.detail === 0 || pointerSelectionId !== node.id) selectNode(node.id, event.shiftKey); pointerSelectionId = ''; if (['image', 'generation_result'].includes(node.type)) activateImageNode(node); }
     });
     let draggedInput = null; $('#canvas-nodes').addEventListener('dragstart', event => { const row = event.target.closest('[data-input-id]'); if (!row) { event.preventDefault(); return; } draggedInput = {requestId: row.dataset.requestId, sourceId: row.dataset.inputId}; event.dataTransfer.effectAllowed = 'move'; }); $('#canvas-nodes').addEventListener('dragover', event => { if (draggedInput && event.target.closest('[data-input-id]')) event.preventDefault(); }); $('#canvas-nodes').addEventListener('drop', event => { const row = event.target.closest('[data-input-id]'); if (row && draggedInput) { event.preventDefault(); reorderInput(draggedInput.requestId, draggedInput.sourceId, row.dataset.inputId); draggedInput = null; } }); $('#canvas-nodes').addEventListener('dragend', () => { draggedInput = null; });
 
     $('#context-menu').addEventListener('click', event => { const action = event.target.closest('[data-context-action]')?.dataset.contextAction; if (action) runContextAction(action); });
     $('#context-menu').addEventListener('keydown', event => { const items = $$('[role="menuitem"]:not(:disabled)', event.currentTarget); const index = items.indexOf(document.activeElement); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Home') items[0]?.focus(); else if (event.key === 'End') items.at(-1)?.focus(); });
-    document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.model-picker')) closeActivePicker(); });
+    document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.visual-picker')) closeActivePicker(true); });
     document.addEventListener('keydown', event => {
       const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
       if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
@@ -435,9 +457,7 @@
       else if ((event.key === '-' || event.key === '_') && canvasFocused) { event.preventDefault(); zoomAt(state.viewport.zoom - .1, innerWidth / 2, innerHeight / 2); }
     });
     document.addEventListener('paste', event => {
-      if (core.isEditableTarget(event.target)) return;
-      const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
-      if (!canvasFocused) return;
+      if (pasteEditableTarget(event.target)) return;
       const files = transferFiles(event.clipboardData);
       if (files.length) {
         event.preventDefault();
@@ -448,7 +468,7 @@
         event.preventDefault(); pasteClipboard(lastCanvasPointer || visibleWorldCenter());
       }
     });
-    $('#canvas-nodes').addEventListener('keydown', event => { if (!event.target.matches('[role="option"]')) return; const items = $$('[role="option"]:not(:disabled)', event.target.closest('.model-menu')); const index = items.indexOf(event.target); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.target.click(); } });
+    $('#canvas-nodes').addEventListener('keydown', event => { if (!event.target.matches('[role="radio"],[role="tab"]')) return; const group = event.target.closest('[role="radiogroup"],[role="tablist"]'); const items = $$('[role="radio"],[role="tab"]', group).filter(item => !item.disabled); const index = items.indexOf(event.target); if (['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) { event.preventDefault(); items[(index + (['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.target.click(); } });
 
     $('#mobile-projects-button').addEventListener('click', () => setProjectDrawer(!$('#workspace-layout').classList.contains('drawer-open')));
     $('#project-scrim').addEventListener('click', () => setProjectDrawer(false));
@@ -463,7 +483,7 @@
     viewerStage.addEventListener('pointerdown', event => { if (event.button !== 0 || !viewerStage.classList.contains('can-pan')) return; event.preventDefault(); event.stopPropagation(); Object.assign(viewerState, {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: viewerState.panX, originY: viewerState.panY}); viewerStage.classList.add('is-panning'); viewerStage.setPointerCapture?.(event.pointerId); });
     viewerStage.addEventListener('pointermove', event => { if (viewerState.pointerId !== event.pointerId) return; viewerState.panX = viewerState.originX + event.clientX - viewerState.startX; viewerState.panY = viewerState.originY + event.clientY - viewerState.startY; applyViewerTransform(); });
     const endViewerPan = event => { if (viewerState.pointerId !== event.pointerId) return; viewerState.pointerId = null; viewerStage.classList.remove('is-panning'); viewerStage.releasePointerCapture?.(event.pointerId); }; viewerStage.addEventListener('pointerup', endViewerPan); viewerStage.addEventListener('pointercancel', endViewerPan);
-    $('#project-rename-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeRenameProjectDialog(); }); viewerDialog.addEventListener('click', event => { if (event.target === event.currentTarget) closeViewer(); });
+    $('#project-rename-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeRenameProjectDialog(); }); $('#project-rename-dialog').addEventListener('close', clearRenameProjectDialog); viewerDialog.addEventListener('click', event => { if (event.target === event.currentTarget) closeViewer(); });
     $('#minimap-toggle').addEventListener('click', () => { const svg = $('#minimap-map'); svg.hidden = !svg.hidden; $('#minimap-toggle').setAttribute('aria-expanded', String(!svg.hidden)); if (!svg.hidden) updateMinimap(); });
     $('#minimap-map').addEventListener('pointerdown', event => { event.preventDefault(); minimapDrag = event.pointerId; event.currentTarget.setPointerCapture?.(event.pointerId); recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointermove', event => { if (minimapDrag === event.pointerId) recenterFromMinimap(event); }); $('#minimap-map').addEventListener('pointerup', event => { if (minimapDrag === event.pointerId) { minimapDrag = null; scheduleSave(); } });
     window.addEventListener('resize', () => { if (!matchMedia('(max-width: 768px)').matches && $('#workspace-layout').classList.contains('drawer-open')) setProjectDrawer(false); scheduleLinks(); if (viewerDialog.open) requestAnimationFrame(viewerState.fit ? fitViewer : applyViewerTransform); });
