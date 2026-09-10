@@ -156,6 +156,21 @@ def test_canvas_state_is_unique_per_project():
         assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == first_state
         assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == {}
 
+        second_state = {
+            "viewport": {"x": -90, "y": 45, "zoom": 1.25},
+            "nodes": [{"id": "second-only", "type": "generation_request"}],
+            "clipboard": {"selectedIds": ["second-only"]},
+            "selection": ["second-only"],
+            "draft": {"prompt": "乙项目草稿"},
+        }
+        assert client.put(
+            f"/api/projects/{second_id}/canvas",
+            json=second_state,
+            headers={"X-CSRF-Token": token},
+        ).status_code == 200
+        assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == second_state
+        assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == first_state
+
         draft = {"prompt": "保留画布时保存草稿"}
         assert client.put(
             f"/api/projects/{first_id}/canvas",
@@ -166,6 +181,32 @@ def test_canvas_state_is_unique_per_project():
             **first_state,
             "draft": draft,
         }
+        assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == second_state
+
+
+def test_workspace_project_switcher_lists_only_owned_active_projects():
+    with TestClient(app) as client:
+        token = login(client)
+        first_id = create_project(client, token, "切换项目甲")
+        second_id = create_project(client, token, "切换项目乙")
+        response = client.get(f"/projects/{first_id}")
+        assert response.status_code == 200
+        assert f'href="/projects/{first_id}"' in response.text
+        assert f'href="/projects/{second_id}"' in response.text
+        assert 'data-new-project' in response.text
+        assert 'action="/projects"' in response.text
+        assert f'action="/projects/{first_id}/rename"' not in response.text
+
+        with SessionLocal() as session:
+            admin = session.query(User).filter_by(username="admin").one()
+            foreign = User(username="foreign-switcher", password_hash=admin.password_hash)
+            session.add(foreign)
+            session.flush()
+            foreign_project = Project(user_id=foreign.id, name="他人不可见项目")
+            session.add(foreign_project)
+            session.commit()
+        response = client.get(f"/projects/{first_id}")
+        assert "他人不可见项目" not in response.text
 
 
 def test_mutations_require_csrf(monkeypatch):

@@ -4,14 +4,14 @@
 <a class="skip-link" href="#canvas-viewport">跳到画布</a>
 <header class="workspace-bar">
   <div class="workspace-left">
-    <a class="icon-link" href="/projects" aria-label="返回项目" title="返回项目">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
-    </a>
-    <form class="project-name-form" action="/projects/{{ project.id }}/rename" method="post">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input name="name" value="{{ project.name }}" maxlength="160" aria-label="项目名称">
-      <button class="quiet-button" type="submit">保存名称</button>
-    </form>
+    <button class="project-switcher" id="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false">
+      <span>{{ project.name }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+    </button>
+    <div class="project-menu" id="project-menu" role="menu" hidden>
+      <div class="menu-label">项目</div>
+      {% for item in projects %}<a role="menuitemradio" aria-checked="{{ 'true' if item.id == project.id else 'false' }}" href="/projects/{{ item.id }}"><span>{{ item.name }}</span>{% if item.id == project.id %}<b aria-hidden="true">✓</b>{% endif %}</a>{% endfor %}
+      <button type="button" role="menuitem" data-new-project>新建项目</button>
+    </div>
   </div>
   <div class="workspace-actions">
     <span class="save-state" id="save-state" role="status"><i></i>已保存</span>
@@ -31,23 +31,16 @@
     <button class="tool-button icon-only" id="zoom-in" type="button" aria-label="放大" title="放大"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M8 11h6m-3-3v6m5.2 2.2L21 21"/></svg></button>
   </div>
   <section class="canvas-viewport" id="canvas-viewport" tabindex="0" aria-label="项目创作画布">
-    <div class="canvas-world" id="canvas-world">
-      <svg class="canvas-links" id="canvas-links" width="5000" height="3600" aria-hidden="true"></svg>
-      <div class="canvas-nodes" id="canvas-nodes"></div>
-    </div>
-    <div class="canvas-empty" id="canvas-empty">
-      <strong>拖入图片，或新建生图</strong>
-      <span>从图片右侧拉线，即可绑定到生图器</span>
-      <button type="button" data-empty-action="request">直接新建生图</button>
-    </div>
+    <div class="canvas-world" id="canvas-world"><svg class="canvas-links" id="canvas-links" width="5000" height="3600" aria-hidden="true"></svg><div class="canvas-nodes" id="canvas-nodes"></div></div>
+    <div class="canvas-empty" id="canvas-empty"><strong>拖入图片，或新建生图</strong><span>从图片右侧拉线，即可绑定到生图器</span><button type="button" data-empty-action="request">直接新建生图</button></div>
   </section>
+  <aside class="minimap" id="minimap" aria-label="画布缩略导航"><button class="minimap-toggle" id="minimap-toggle" type="button" aria-expanded="true" aria-controls="minimap-map">导航</button><svg id="minimap-map" viewBox="0 0 176 112" role="img" aria-label="节点和当前可见区域"></svg></aside>
 </main>
+<div class="context-menu" id="context-menu" role="menu" tabindex="-1" hidden></div>
+<div class="shortcut-popover" id="shortcut-popover" role="dialog" aria-modal="false" aria-labelledby="shortcut-title" hidden><header><strong id="shortcut-title">画布快捷键</strong><button type="button" data-close-overlay aria-label="关闭">×</button></header><dl><div><dt>选择 / 多选</dt><dd>点击 / Shift + 点击</dd></div><div><dt>复制 / 粘贴</dt><dd>⌘/Ctrl + C / V</dd></div><div><dt>全选 / 删除</dt><dd>⌘/Ctrl + A / Delete</dd></div><div><dt>适应 / 缩放</dt><dd>0 / + / −</dd></div><div><dt>取消</dt><dd>Esc</dd></div><div><dt>帮助</dt><dd>?</dd></div></dl></div>
+<dialog class="new-project-dialog" id="new-project-dialog" aria-labelledby="new-project-title"><form action="/projects" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><header><strong id="new-project-title">新建项目</strong><button type="button" data-close-dialog aria-label="关闭">×</button></header><label>项目名称<input name="name" maxlength="160" required autocomplete="off" placeholder="例如：夏季新品视觉"></label><footer><button class="secondary" type="button" data-close-dialog>取消</button><button class="primary" type="submit">创建并打开</button></footer></form></dialog>
+<dialog class="image-viewer" id="image-viewer" aria-labelledby="viewer-title"><div class="viewer-head"><strong id="viewer-title">查看大图</strong><div><a data-view-original target="_blank" rel="noopener">打开原图</a><a data-view-download download>下载</a><button type="button" data-close-viewer aria-label="关闭">×</button></div></div><div class="viewer-stage"><img alt="完整大图预览"></div></dialog>
 <div class="toast" id="toast" aria-live="polite"></div>
-<script>
-window.IMAGE_HUB_MODELS = {{ profiles | tojson }};
-window.IMAGE_HUB_CSRF = {{ csrf_token | tojson }};
-window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};
-</script>
-<script src="/static/canvas-core.js?v=1" defer></script>
-<script src="/static/app.js?v=5" defer></script>
+<script>window.IMAGE_HUB_MODELS={{ profiles | tojson }};window.IMAGE_HUB_CSRF={{ csrf_token | tojson }};window.IMAGE_HUB_PROJECT_ID={{ project.id | tojson }};</script>
+<script src="/static/canvas-core.js?v=2" defer></script><script src="/static/app.js?v=6" defer></script>
 {% endblock %}

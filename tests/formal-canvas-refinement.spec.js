@@ -1,0 +1,45 @@
+const {test, expect} = require('@playwright/test');
+const BASE = process.env.FORMAL_URL || 'http://127.0.0.1:5190';
+
+async function login(page) {
+  await page.goto(`${BASE}/login`);
+  await page.locator('input[name="username"]').fill('admin');
+  await page.locator('input[name="password"]').fill('test-password');
+  await Promise.all([page.waitForURL('**/projects'), page.locator('button[type="submit"]').click()]);
+}
+async function createProject(page, name) {
+  await page.locator('input[name="name"]').fill(name);
+  await Promise.all([page.waitForURL(/\/projects\/[^/]+$/), page.locator('form[action="/projects"] button').click()]);
+}
+async function png(page, width, height, color) {
+  const base64 = await page.evaluate(({width,height,color}) => { const c=document.createElement('canvas');c.width=width;c.height=height;const x=c.getContext('2d');x.fillStyle=color;x.fillRect(0,0,width,height);x.fillStyle='#fff';x.font='32px sans-serif';x.fillText(`${width}:${height}`,20,50);return c.toDataURL('image/png').split(',')[1]; }, {width,height,color});
+  return Buffer.from(base64, 'base64');
+}
+async function deltas(page) {
+  return page.evaluate(() => [...document.querySelectorAll('#canvas-links path[data-end-x]')].map(path => {
+    const s=document.querySelector(`[data-node-id="${path.dataset.source}"] ${path.classList.contains('derived-link')?'.request-output-port':'.output-port'}`),t=document.querySelector(`[data-node-id="${path.dataset.target}"] ${path.classList.contains('derived-link')?'.derived-input-port':'.input-port'}`),v=document.querySelector('#canvas-viewport').getBoundingClientRect(),m=new DOMMatrix(getComputedStyle(document.querySelector('#canvas-world')).transform),c=e=>{const r=e.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}},a=c(s),b=c(t),p=(x,y)=>({x:v.left+m.e+x*m.a,y:v.top+m.f+y*m.d}),sp=p(+path.dataset.startX,+path.dataset.startY),ep=p(+path.dataset.endX,+path.dataset.endY);return{start:Math.hypot(sp.x-a.x,sp.y-a.y),end:Math.hypot(ep.x-b.x,ep.y-b.y)};
+  }));
+}
+
+test('formal site canvas contract and project isolation', async ({page}) => {
+  test.setTimeout(60000);
+  const errors=[];page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});page.on('pageerror',e=>errors.push(e.message));
+  await page.setViewportSize({width:1440,height:960});await login(page);await createProject(page,`正式画布甲-${Date.now()}`);
+  const landscape=await png(page,900,300,'#64796a'),portrait=await png(page,300,900,'#886b5c');
+  await page.locator('#canvas-upload').setInputFiles([{name:'landscape-3x1.png',mimeType:'image/png',buffer:landscape},{name:'portrait-1x3.png',mimeType:'image/png',buffer:portrait}]);
+  await expect(page.locator('.image-node')).toHaveCount(2);await page.locator('#add-request').click();await expect(page.locator('.request-node')).toHaveCount(1);
+  const image=page.locator('.image-node').first(),request=page.locator('.request-node');const out=await image.locator('.output-port').boundingBox(),input=await request.locator('.input-port').boundingBox();await page.mouse.move(out.x+out.width/2,out.y+out.height/2);await page.mouse.down();await page.mouse.move(input.x+input.width/2,input.y+input.height/2);await page.mouse.up();await expect(page.locator('.input-link')).toHaveCount(1);
+  await page.waitForTimeout(80);let values=await deltas(page);values.forEach(v=>{expect(v.start).toBeLessThanOrEqual(1.5);expect(v.end).toBeLessThanOrEqual(1.5)});
+  await page.locator('#zoom-in').click();await page.waitForTimeout(80);values=await deltas(page);values.forEach(v=>{expect(v.start).toBeLessThanOrEqual(1.5);expect(v.end).toBeLessThanOrEqual(1.5)});
+  await request.click();await expect(request).toHaveClass(/expanded/);await request.locator('[data-toggle-request]').click();await request.locator('[data-toggle-request]').click();await page.waitForTimeout(80);values=await deltas(page);values.forEach(v=>{expect(v.start).toBeLessThanOrEqual(1.5);expect(v.end).toBeLessThanOrEqual(1.5)});
+  const fidelity=await page.locator('.image-node img').evaluateAll(imgs=>imgs.map(i=>({fit:getComputedStyle(i).objectFit,intrinsic:i.naturalWidth/i.naturalHeight})));expect(fidelity[0].fit).toBe('contain');expect(fidelity[0].intrinsic).toBeCloseTo(3,4);expect(fidelity[1].intrinsic).toBeCloseTo(1/3,4);
+  await page.locator('#canvas-viewport').focus();await page.keyboard.press('Control+a');await expect(page.locator('.canvas-node[aria-selected="true"]')).toHaveCount(3);await page.keyboard.press('Control+c');await page.keyboard.press('Control+v');await expect(page.locator('.canvas-node')).toHaveCount(6);await page.keyboard.press('Delete');await expect(page.locator('.canvas-node')).toHaveCount(3);
+  await image.dblclick({force:true});await expect(page.locator('#image-viewer')).toBeVisible();await expect(page.locator('#image-viewer img')).toHaveCSS('object-fit','contain');await page.keyboard.press('Escape');
+  await request.locator('[data-model-trigger]').click();await expect(request.locator('.model-group')).toHaveCount(3);await page.keyboard.press('Escape');
+  await page.locator('#canvas-viewport').click({button:'right',position:{x:1280,y:680},force:true});const menu=page.locator('#context-menu'),box=await menu.boundingBox();expect(box.x+box.width).toBeLessThanOrEqual(1440);expect(box.y+box.height).toBeLessThanOrEqual(960);await page.keyboard.press('Escape');
+  await expect(page.locator('#minimap-map')).toHaveAttribute('data-node-count','3');const old=await page.locator('#canvas-world').evaluate(e=>getComputedStyle(e).transform);await page.locator('#minimap-map').click({position:{x:20,y:20}});expect(await page.locator('#canvas-world').evaluate(e=>getComputedStyle(e).transform)).not.toBe(old);
+  await page.waitForTimeout(800);const firstUrl=page.url();await page.locator('#project-switcher').click();await page.locator('[data-new-project]').click();await page.locator('#new-project-dialog input[name="name"]').fill(`正式画布乙-${Date.now()}`);await Promise.all([page.waitForURL(url=>url.toString()!==firstUrl),page.locator('#new-project-dialog button[type="submit"]').click()]);await expect(page.locator('.canvas-node')).toHaveCount(0);await page.locator('#add-request').click();await expect(page.locator('.canvas-node')).toHaveCount(1);await page.locator('#project-switcher').click();await Promise.all([page.waitForURL(firstUrl),page.locator(`#project-menu a[href="${new URL(firstUrl).pathname}"]`).click()]);await expect(page.locator('.canvas-node')).toHaveCount(3);
+  const resources=await page.evaluate(()=>performance.getEntriesByType('resource').map(r=>new URL(r.name).origin));expect(resources.every(x=>x===new URL(BASE).origin)).toBeTruthy();expect(errors).toEqual([]);
+  for (const size of [{n:'1440x960',w:1440,h:960},{n:'1024x900',w:1024,h:900},{n:'768x900',w:768,h:900},{n:'375x812',w:375,h:812}]) { await page.setViewportSize({width:size.w,height:size.h}); if(size.w<=420) await page.reload({waitUntil:'networkidle'}); await page.waitForTimeout(80); expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(0); if(size.w<=420){await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded','false');await page.locator('#minimap-toggle').click();await expect(page.locator('#minimap-map')).toBeVisible()} await page.screenshot({path:`qa/formal-${size.n}.png`,fullPage:true}); }
+  expect(errors).toEqual([]);
+});

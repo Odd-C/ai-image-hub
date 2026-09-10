@@ -104,3 +104,91 @@ def test_restored_local_upload_requires_reselection_without_changing_relationshi
     assert restored[0]["needsReselect"] is True
     assert restored[1]["orderedInputIds"] == ["upload-1"]
     assert result["missingId"] == "upload-1"
+
+
+def test_copy_paste_remaps_internal_relationships_without_backend_evidence():
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        let sequence = 0;
+        const uid = prefix => `${{prefix}}-new-${{++sequence}}`;
+        const nodes = [
+          {{id:'image-a', type:'image', x:10, y:20, width:200}},
+          {{id:'request-a', type:'generation_request', x:250, y:20, width:340,
+            orderedInputIds:['image-a','missing'], submitting:true}},
+          {{id:'result-a', type:'generation_result', generationId:'immutable-generation',
+            requestId:'request-a', x:650, y:20, width:240, sentiment:'adopted', canRetry:true}}
+        ];
+        const copied = core.clonePresentationNodes(nodes, nodes.map(n => n.id), uid, {{x:36,y:40}});
+        console.log(JSON.stringify(copied));
+        """
+    )
+    clones = {node["type"]: node for node in result["clones"]}
+    assert clones["image"]["x"] == 46
+    assert clones["generation_request"]["orderedInputIds"] == [clones["image"]["id"]]
+    assert clones["generation_request"]["submitting"] is False
+    assert clones["generation_result"]["requestId"] == clones["generation_request"]["id"]
+    assert clones["generation_result"]["presentationProxy"] is True
+    assert "generationId" not in clones["generation_result"]
+    assert "sentiment" not in clones["generation_result"]
+    assert "canRetry" not in clones["generation_result"]
+
+
+def test_delete_is_presentation_only_and_prunes_references():
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        const nodes = [
+          {{id:'image-a', type:'image'}},
+          {{id:'request-a', type:'generation_request', orderedInputIds:['image-a']}},
+          {{id:'result-a', type:'generation_result', generationId:'keep-in-database', requestId:'request-a'}}
+        ];
+        console.log(JSON.stringify(core.removePresentationNodes(nodes, ['image-a','request-a'])));
+        """
+    )
+    assert result == [{
+        "id": "result-a",
+        "type": "generation_result",
+        "generationId": "keep-in-database",
+        "requestId": "",
+    }]
+
+
+def test_geometry_converts_screen_centers_once_and_builds_minimap():
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        const port = core.rectCenterToWorld(
+          {{left:510,top:305,width:12,height:12}},
+          {{left:100,top:50,width:800,height:600}},
+          {{x:80,y:35,zoom:1.5}}
+        );
+        const visible = core.visibleWorld({{width:800,height:600}}, {{x:80,y:35,zoom:1.5}});
+        const mini = core.minimapGeometry([{{x:10,y:20,width:200,height:100}}], visible);
+        const center = core.minimapPointToWorld({{
+          x:mini.viewport.x + mini.viewport.width/2,
+          y:mini.viewport.y + mini.viewport.height/2
+        }}, mini);
+        console.log(JSON.stringify({{port,visible,mini,center}}));
+        """
+    )
+    assert result["port"] == {"x": 224, "y": 150.66666666666666}
+    assert result["visible"]["x"] == -53.333333333333336
+    assert result["visible"]["width"] == 533.3333333333334
+    assert len(result["mini"]["nodes"]) == 1
+    assert abs(result["center"]["x"] - (result["visible"]["x"] + result["visible"]["width"] / 2)) < 1e-9
+    assert abs(result["center"]["y"] - (result["visible"]["y"] + result["visible"]["height"] / 2)) < 1e-9
+
+
+def test_editable_targets_disable_canvas_shortcuts():
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        console.log(JSON.stringify({{
+          input: core.isEditableTarget({{tagName:'INPUT'}}),
+          canvas: core.isEditableTarget({{tagName:'SECTION', isContentEditable:false}}),
+          editable: core.isEditableTarget({{tagName:'DIV', isContentEditable:true}})
+        }}));
+        """
+    )
+    assert result == {"input": True, "canvas": False, "editable": True}

@@ -294,12 +294,18 @@ def workspace(
     if not user:
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     project = _owned_project(session, user, project_id)
+    projects = session.scalars(
+        select(Project)
+        .where(Project.user_id == user.id, Project.archived_at.is_(None))
+        .order_by(Project.updated_at.desc())
+    ).all()
     return templates.TemplateResponse(
         request,
         "workspace.html",
         {
             "user": user,
             "project": project,
+            "projects": projects,
             "profiles": [profile.public_dict() for profile in model_profiles()],
             "csrf_token": csrf_token(request),
         },
