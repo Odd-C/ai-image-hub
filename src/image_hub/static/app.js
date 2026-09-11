@@ -101,7 +101,10 @@
       profileUnavailable: Boolean(inherited.profileId && !profile),
     });
   }
-  function addGeneration(x, y, inherited = {}) { const node = defaultGeneration(x, y, inherited); state.nodes.push(node); selectNode(node.id, false, false); scheduleSave(); if (node.expanded) requestAnimationFrame(() => $(`[data-node-id="${node.id}"] textarea`)?.focus()); return node; }
+  /* Every path that mutates the node collection must redraw explicitly:
+     selectNode() is presentation-only and no longer carries the implicit
+     redraw that used to make a new card appear without a page reload. */
+  function addGeneration(x, y, inherited = {}) { const node = defaultGeneration(x, y, inherited); state.nodes.push(node); selectNode(node.id, false, false); render(); scheduleLayoutRecompute(); scheduleSave(); if (node.expanded) requestAnimationFrame(() => $(`[data-node-id="${node.id}"] textarea`)?.focus()); return node; }
   function addInput(nodeId, ref) {
     const node = nodeById(nodeId);
     if (!core.isGenerationNode(node)) return false;
@@ -180,7 +183,6 @@
     const element = $(`[data-node-id="${node.id}"]`); if (!element) return;
     element.classList.toggle('dirty', node.dirty);
     $('[data-dirty-flag]', element)?.toggleAttribute('hidden', !node.dirty);
-    $('[data-dirty-note]', element)?.toggleAttribute('hidden', !node.dirty);
   }
   function displayBatch(node) {
     if (core.batchResults(node.activeBatch).length) return node.activeBatch;
@@ -267,8 +269,12 @@
     const busy = node.submitting || Boolean(node.attempt && !node.attempt.settled);
     const hasBatch = Boolean(displayBatch(node));
     const label = node.submitting ? '正在提交…' : busy ? '生成中…' : hasBatch ? '重新生成' : '生成图片';
-    return `<div class="generation-editor">${rows ? `<ol class="request-inputs">${rows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}<label class="prompt-label">提示词<textarea data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></label><label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率${imageSettingsPickerMarkup(node, profile)}</label><label>数量<select data-field="count">${[1, 2, 3, 4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${sentimentRowMarkup(node)}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<p class="dirty-note" data-dirty-note role="status" ${node.dirty ? '' : 'hidden'}>已修改，待重新生成；当前图片会保留。</p><button class="generate-button" type="button" data-generate ${availability.enabled && !busy ? '' : 'disabled'}>${label}</button></div>`;
+    return `<div class="generation-editor">${rows ? `<ol class="request-inputs">${rows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}<label class="prompt-label">提示词<textarea data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></label><label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率${imageSettingsPickerMarkup(node, profile)}</label><label>数量<select data-field="count">${[1, 2, 3, 4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${sentimentRowMarkup(node)}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<button class="generate-button" type="button" data-generate ${availability.enabled && !busy ? '' : 'disabled'}>${label}</button></div>`;
   }
+  /* The rail owns the single result-count readout; the header only reports the
+     input count (plus a status while no result summary exists yet). The card's
+     only delete control lives in the header, and the collapse-to-result entry
+     appears here only while the editor is closed. */
   function generationRailMarkup(node) {
     const batch = displayBatch(node);
     if (!batch) return '';
@@ -277,7 +283,8 @@
     const ready = Boolean(primary && primary.status === 'succeeded' && primary.artifactUrl);
     const succeeded = results.filter(result => result.status === 'succeeded').length;
     const meta = `${succeeded}/${results.length} 张结果${node.error ? ' · 有失败' : ''}`;
-    return `<footer class="image-node-bar generation-rail"><span class="rail-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span><div class="node-action-rail"><div class="file-actions"><button type="button" data-open-result ${ready ? '' : 'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button type="button" data-download-result ${ready ? '' : 'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div><button class="edit-action" type="button" data-edit-generation aria-expanded="${node.expanded}" aria-label="编辑并重新生成" title="编辑并重新生成">编辑并重新生成</button><div class="remove-actions"><button type="button" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></div></footer>`;
+    const editAction = node.expanded ? '' : '<button class="edit-action" type="button" data-edit-generation aria-expanded="false" aria-label="编辑并重新生成" title="编辑并重新生成">编辑并重新生成</button>';
+    return `<footer class="generation-rail"><span class="rail-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span><div class="node-action-rail"><div class="file-actions"><button type="button" data-open-result ${ready ? '' : 'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button type="button" data-download-result ${ready ? '' : 'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div>${editAction}</div></footer>`;
   }
   function generationMarkup(node) {
     const inputs = (node.orderedInputIds || []).length;
@@ -285,7 +292,9 @@
     const batch = activeBatch || (core.batchResults(node.attempt).length ? node.attempt : null);
     const expanded = Boolean(node.expanded);
     const media = batch ? resultGridMarkup(node, batch, Boolean(activeBatch)) : '';
-    return `<article class="canvas-node generation-node${expanded ? ' expanded' : ''}${state.selectedIds.has(node.id) ? ' selected' : ''}${node.dirty ? ' dirty' : ''}" data-node-id="${node.id}" data-node-type="${core.GENERATION}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><header class="node-header"><div class="generation-heading"><span>生成</span><small>${inputs} 张输入 · ${escapeHtml(generationStatusText(node))}</small><em class="dirty-flag" data-dirty-flag ${node.dirty ? '' : 'hidden'}>待重新生成</em></div><div class="node-header-actions"><button type="button" data-toggle-generation aria-label="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" title="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" aria-expanded="${expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="generation-body"><div class="generation-media">${media}${batchProgressMarkup(node)}${generationErrorMarkup(node, batch)}</div>${expanded ? generationEditorMarkup(node) : ''}</div>${generationRailMarkup(node)}</article>`;
+    const inputMeta = `${inputs} 张输入${batch ? '' : ` · ${escapeHtml(generationStatusText(node))}`}`;
+    const classes = ['canvas-node', 'generation-node', expanded ? 'expanded' : '', batch ? 'has-results' : '', state.selectedIds.has(node.id) ? 'selected' : '', node.dirty ? 'dirty' : ''].filter(Boolean).join(' ');
+    return `<article class="${classes}" data-node-id="${node.id}" data-node-type="${core.GENERATION}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><header class="node-header"><div class="generation-heading"><span>生成</span><small>${inputMeta}</small><em class="dirty-flag" data-dirty-flag title="已修改，待重新生成；当前图片会保留。" ${node.dirty ? '' : 'hidden'}>待重新生成</em></div><div class="node-header-actions"><button type="button" data-toggle-generation aria-label="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" title="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" aria-expanded="${expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="generation-body"><div class="generation-media">${media}${batchProgressMarkup(node)}${generationErrorMarkup(node, batch)}</div>${expanded ? generationEditorMarkup(node) : ''}</div>${generationRailMarkup(node)}</article>`;
   }
   function imageMarkup(node) {
     const needsReselect = node.needsReselect || (node.localOnly && !localFiles.has(node.id));
@@ -322,7 +331,17 @@
   function observeLayout() { resizeObserver?.disconnect(); resizeObserver = new ResizeObserver(() => scheduleLinks()); $$('.canvas-node').forEach(el => resizeObserver.observe(el)); }
   function render() { cancelAnimationFrame(renderFrame); $('#canvas-nodes').innerHTML = state.nodes.map(node => core.isGenerationNode(node) ? generationMarkup(node) : imageMarkup(node)).join(''); $('#canvas-empty').hidden = state.nodes.length > 0; applyViewport(); renderFrame = requestAnimationFrame(() => { observeLayout(); scheduleLinks(); }); }
   function scheduleLayoutRecompute() { requestAnimationFrame(() => requestAnimationFrame(() => { scheduleLinks(); updateMinimap(); })); }
-  function toggleGeneration(node) { if (!core.isGenerationNode(node)) return; node.expanded = !node.expanded; render(); scheduleLayoutRecompute(); scheduleSave(); }
+  /* The header chevron is the only control that returns a card to the collapsed
+     result summary, so it also owns the expand pin. */
+  function toggleGeneration(node) { if (!core.isGenerationNode(node)) return; node.expanded = !node.expanded; node.expandedPinned = node.expanded; render(); scheduleLayoutRecompute(); scheduleSave(); }
+  function setGenerationExpanded(node, expanded, pinned) {
+    if (!core.isGenerationNode(node)) return;
+    const next = Boolean(expanded);
+    const pin = next ? Boolean(pinned) : false;
+    const changed = node.expanded !== next || node.expandedPinned !== pin;
+    node.expanded = next; node.expandedPinned = pin;
+    if (changed) { render(); scheduleLayoutRecompute(); scheduleSave(); }
+  }
 
   function nodeWorldRects() { return state.nodes.map(node => { const el = $(`[data-node-id="${node.id}"]`); const rect = el?.getBoundingClientRect(); return {x: node.x, y: node.y, width: node.width, height: rect ? rect.height / state.viewport.zoom : 240, type: node.type}; }); }
   function updateMinimap() {
@@ -411,17 +430,28 @@
       quality: parameters.quality,
     });
   }
+  /* Pointer capture is taken on the first real movement, never on pointerdown:
+     capturing the viewport immediately retargets the following click/dblclick
+     to the viewport, which silently killed result-image single click (expand)
+     and double click (viewer). */
   function startNodeDrag(event, node) {
     if (event.button !== 0 || event.target.closest('button,input,textarea,select,a,summary,[draggable="true"]')) return;
     event.preventDefault(); event.stopPropagation();
     pointerSelectionId = node.id;
     if (!state.selectedIds.has(node.id)) selectNode(node.id, event.shiftKey, false);
     const origins = [...state.selectedIds].map(id => { const item = nodeById(id); return item && {id, x: item.x, y: item.y}; }).filter(Boolean);
-    drag = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origins, moved: false}; event.currentTarget.setPointerCapture?.(event.pointerId); origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.add('dragging')); syncDraggingClass();
+    drag = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origins, moved: false, captured: false}; origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.add('dragging')); syncDraggingClass();
   }
   function movePointer(event) {
     if (state.connecting && event.pointerId === state.connecting.pointerId) { state.connecting.current = worldPoint(event.clientX, event.clientY); $$('.generation-node.drop-target').forEach(node => node.classList.remove('drop-target')); document.elementFromPoint(event.clientX, event.clientY)?.closest('.generation-node')?.classList.add('drop-target'); scheduleLinks(); return; }
-    if (drag && event.pointerId === drag.pointerId) { const dx = (event.clientX - drag.startX) / state.viewport.zoom; const dy = (event.clientY - drag.startY) / state.viewport.zoom; if (Math.hypot(dx, dy) > 2) drag.moved = true; drag.origins.forEach(origin => { const node = nodeById(origin.id); if (!node) return; node.x = origin.x + dx; node.y = origin.y + dy; const el = $(`[data-node-id="${node.id}"]`); if (el) { el.style.left = `${node.x}px`; el.style.top = `${node.y}px`; } }); scheduleLinks(); return; }
+    if (drag && event.pointerId === drag.pointerId) {
+      const dx = (event.clientX - drag.startX) / state.viewport.zoom; const dy = (event.clientY - drag.startY) / state.viewport.zoom;
+      if (Math.hypot(dx, dy) > 2) {
+        if (!drag.moved) { drag.moved = true; if (!drag.captured) { drag.captured = true; event.currentTarget.setPointerCapture?.(event.pointerId); } }
+        drag.origins.forEach(origin => { const node = nodeById(origin.id); if (!node) return; node.x = origin.x + dx; node.y = origin.y + dy; const el = $(`[data-node-id="${node.id}"]`); if (el) { el.style.left = `${node.x}px`; el.style.top = `${node.y}px`; } }); scheduleLinks();
+      }
+      return;
+    }
     if (pan && event.pointerId === pan.pointerId) { const dx = event.clientX - pan.startX; const dy = event.clientY - pan.startY; if (Math.hypot(dx, dy) > 4) pan.moved = true; state.viewport.x = pan.x + dx; state.viewport.y = pan.y + dy; applyViewport(); }
   }
   function clearPointerInteraction(pointerId) {
@@ -488,8 +518,11 @@
       node.error = anySucceeded ? '' : (results.map(result => result.error).find(Boolean) || '生成失败，可安全重试');
       node.primaryResultId = anySucceeded ? (results.find(result => result.status === 'succeeded')?.id || '') : '';
       node.dirty = core.isDirty(node);
-      if (!anySucceeded) node.expanded = true;
-      else if (!editorFocused(node)) node.expanded = false;
+      /* Only a freshly submitted generation may return the card to its result
+         summary. A card the user expanded by hand keeps its editor open until
+         the header toggle closes it. */
+      if (!anySucceeded) { node.expanded = true; node.expandedPinned = true; }
+      else if (!node.expandedPinned && !editorFocused(node)) node.expanded = false;
       return true;
     }
     attempt.promoted = false;
@@ -509,6 +542,9 @@
     const aspect = core.ratioToAspect(request.ratio);
     const results = Array.from({length: count}, () => core.normalizeResult({id: uid('result'), status: 'queued', aspect, provider: profile.provider, modelLabel: profile.label, prompt: node.prompt, profileId: profile.id, parameters: {ratio: request.ratio, resolution: request.resolution, quality: request.quality, count}}));
     node.attempt = {id: uid('batch'), createdAt: new Date().toISOString(), parentGenerationId: parent, request, results, settled: false, promoted: false};
+    /* Submitting is an explicit "show me the new result" intent, so the card is
+       allowed to fall back to its result summary once this batch settles. */
+    node.expandedPinned = false;
     node.submitting = true; node.error = '';
     render(); scheduleSave();
     await Promise.all(results.map(async result => {
@@ -685,12 +721,15 @@
   }
   function selectImageSetting(node, field, value) { node[field] = value; syncDirty(node); closeActivePicker(); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-image-settings-trigger]`)?.focus({preventScroll: true})); }
   /* Single click expands in place (and marks the primary result when the batch
-     holds several images); double click is handled separately by the viewer. */
+     holds several images); double click is handled separately by the viewer.
+     Expanding here is a user action, so it pins the card against the automatic
+     collapse that a background result refresh may attempt. */
   function activateResult(node, batch, result) {
     const results = core.batchResults(batch);
     let changed = false;
     if (results.length > 1 && results.some(item => item.id === result.id) && node.primaryResultId !== result.id) { node.primaryResultId = result.id; changed = true; }
     if (!node.expanded) { node.expanded = true; changed = true; }
+    if (!node.expandedPinned) { node.expandedPinned = true; changed = true; }
     if (changed) { render(); scheduleLayoutRecompute(); }
     scheduleSave();
   }
@@ -764,7 +803,7 @@
         return;
       }      const batch = displayBatch(node);
       if (event.target.closest('[data-toggle-generation]')) toggleGeneration(node);
-      else if (event.target.closest('[data-edit-generation]')) { if (!node.expanded) { node.expanded = true; render(); scheduleLayoutRecompute(); scheduleSave(); } }
+      else if (event.target.closest('[data-edit-generation]')) setGenerationExpanded(node, true, true);
       else if (event.target.closest('[data-generate]')) generate(node);
       else if (event.target.closest('[data-open-result]')) { const primary = primaryOf(node); if (primary?.artifactUrl) openViewer({url: primary.artifactUrl, title: `${providerLabel(primary.provider)} · ${primary.modelLabel || '生成结果'}`, downloadable: true, invoker: $('[data-open-result]', nodeEl)}); }
       else if (event.target.closest('[data-download-result]')) { const primary = primaryOf(node); if (primary?.artifactUrl) downloadResult(primary.artifactUrl); }

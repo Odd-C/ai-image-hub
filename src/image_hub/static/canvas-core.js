@@ -127,6 +127,10 @@
       y: Number(node?.y) || 0,
       width: Number(node?.width) || DEFAULT_WIDTH,
       expanded: node?.expanded !== false,
+      /* A user-initiated expand is pinned: background result refreshes may
+         re-render the card but must never collapse it again. Only the header
+         toggle (or submitting a new generation) clears the pin. */
+      expandedPinned: node?.expandedPinned === true,
       prompt: node?.prompt || '',
       provider: node?.provider || '',
       profileId: node?.profileId || '',
@@ -517,6 +521,7 @@
         return [idMap.get(ownerId) || ref];
       });
       clone.expanded = true;
+      clone.expandedPinned = false;
       clone.submitting = false;
       clone.uploading = false;
       clone.error = '';

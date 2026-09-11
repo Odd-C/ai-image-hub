@@ -14,10 +14,29 @@
   --red: #b33a32;
   --red-soft: #fbedec;
   --disabled: #b6b6b0;
+  --disabled-bg: #deded9;
+  --disabled-ink: #85857f;
+  --media: #efefed;
   --node-shadow: 0 0 0 1px var(--line), 0 2px 4px rgba(0, 0, 0, 0.04);
   --raised-shadow: 0 0 0 1px var(--line-strong), 0 8px 24px rgba(0, 0, 0, 0.08);
   --menu-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.1);
   --ease: 160ms ease;
+
+  /* Unified generation card: one padding baseline, one control height,
+     one icon size, one hit area and a three-step type scale. */
+  --card-pad: 12px;
+  --card-radius: 8px;
+  --control-radius: 6px;
+  --control-height: 32px;
+  --icon-size: 16px;
+  --hit-size: 28px;
+  --hit-size-touch: 36px;
+  --font-title: 13px;
+  --font-body: 12px;
+  --font-meta: 11px;
+  --weight-title: 600;
+  --weight-ui: 500;
+  --weight-meta: 400;
 }
 
 * { box-sizing: border-box; }
@@ -285,12 +304,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .generate-button { width: 100%; height: 36px; border: 0; border-radius: 6px; background: var(--ink); color: var(--white); font-size: 13px; font-weight: 600; transition: background var(--ease), opacity var(--ease); }
 .generate-button:hover:not(:disabled) { background: #000; }
 .generate-button:active:not(:disabled) { background: #303030; }
-.generate-button:disabled { background: #deded9; color: #85857f; opacity: 1; }
+.generate-button:disabled { background: var(--disabled-bg); color: var(--disabled-ink); opacity: 1; }
 .no-inputs { margin: 0 0 8px; color: var(--tertiary); font-size: 11px; }
 .request-inputs { display: flex; gap: 6px; margin: 0 0 10px; padding: 0 1px 3px; overflow-x: auto; list-style: none; }
 .request-inputs li { position: relative; flex: 0 0 62px; overflow: hidden; border-radius: 6px; background: var(--soft); box-shadow: 0 0 0 1px var(--line); cursor: grab; }
 .request-inputs li:active { cursor: grabbing; }
-.request-inputs img { display: block; width: 62px; height: 48px; background: #efefed; object-fit: contain; }
+.request-inputs img { display: block; width: 62px; height: 48px; background: var(--media); object-fit: contain; }
 .input-index { position: absolute; top: 3px; left: 3px; padding: 1px 4px; border-radius: 9999px; background: rgba(23, 23, 23, 0.88); color: var(--white); font-size: 9px; font-weight: 600; }
 .drag-label { display: block; padding: 2px; color: var(--tertiary); font-size: 8px; text-align: center; }
 .request-inputs button { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 9999px; background: rgba(255, 255, 255, 0.94); color: var(--ink); }
@@ -299,8 +318,8 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .unavailable-model { margin: 0 0 8px; padding: 7px 8px; border-radius: 6px; background: var(--red-soft); color: var(--red); font-size: 11px; line-height: 1.4; }
 
 .image-node { overflow: visible; }
-.image-frame { display: grid; place-items: center; width: 100%; overflow: hidden; border-radius: 8px 8px 0 0; background: #efefed; }
-.image-frame img { display: block; width: 100%; height: 100%; background: #efefed; object-fit: contain; }
+.image-frame { display: grid; place-items: center; width: 100%; overflow: hidden; border-radius: 8px 8px 0 0; background: var(--media); }
+.image-frame img { display: block; width: 100%; height: 100%; background: var(--media); object-fit: contain; }
 .image-node-bar {
   height: 36px;
   padding: 0 4px 0 9px;
@@ -337,11 +356,11 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 8px; }
 .result-grid[data-count="1"], .result-grid.single { grid-template-columns: minmax(0, 1fr); padding: 0; }
 .result-grid[data-count="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.result-tile { position: relative; overflow: visible; border-radius: 6px; background: #efefed; transition: box-shadow var(--ease); }
+.result-tile { position: relative; overflow: visible; border-radius: 6px; background: var(--media); transition: box-shadow var(--ease); }
 .result-grid:not(.single) .result-tile { aspect-ratio: 1 / 1; }
 .result-grid.single .result-tile { aspect-ratio: var(--media-ratio, 4 / 3); border-radius: 8px; }
 .result-tile > img, .result-tile > .result-state { border-radius: 6px; }
-.result-tile > img { display: block; width: 100%; height: 100%; background: #efefed; object-fit: contain; }
+.result-tile > img { display: block; width: 100%; height: 100%; background: var(--media); object-fit: contain; }
 .result-tile.ready:hover { box-shadow: inset 0 0 0 2px rgba(23, 23, 23, 0.22); }
 .result-tile.primary { box-shadow: inset 0 0 0 2px rgba(23, 23, 23, 0.72); }
 .result-tile.primary:hover { box-shadow: inset 0 0 0 2px rgba(23, 23, 23, 0.86); }
@@ -375,7 +394,6 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .generation-error { display: flex; align-items: center; gap: 8px; margin: 0; padding: 7px 10px; border-top: 1px solid var(--line); background: var(--red-soft); color: var(--red); font-size: 11px; line-height: 1.4; }
 .generation-error span { flex: 1 1 auto; min-width: 0; }
 .generation-error .retry-action { flex: 0 0 auto; height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: var(--white); color: var(--red); font-size: 10px; }
-.dirty-note { margin: 0 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 11px; }
 .sentiment-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
 .sentiment-group { display: flex; gap: 2px; }
 .sentiment-group button { height: 26px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--white); color: var(--muted); font-size: 10px; white-space: nowrap; }
@@ -548,7 +566,7 @@ dialog::backdrop { background: rgba(10,10,10,.64); }
 .history-count { min-height: 18px; margin: 10px 2px 0; color: var(--tertiary); font-size: 11px; }
 .history-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 8px; }
 .history-card { display: flex; flex-direction: column; }
-.history-card > img, .history-card > .result-state { display: block; width: 100%; aspect-ratio: 4 / 3; background: #efefed; object-fit: contain; }
+.history-card > img, .history-card > .result-state { display: block; width: 100%; aspect-ratio: 4 / 3; background: var(--media); object-fit: contain; }
 .history-card-body { display: grid; gap: 7px; min-height: 104px; padding: 10px; border-top: 1px solid var(--line); }
 .history-card-body p { margin: 0; overflow: hidden; color: var(--ink); font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .history-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: var(--tertiary); font-size: 10px; }
@@ -864,3 +882,151 @@ th { color: var(--tertiary); font-size: 10px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* ==========================================================================
+   Unified generation card
+   One card owns the composer, the batch and the results. Sections are divided
+   by 1px rules that bleed to both card edges, every horizontal element shares
+   the same 12px baseline, and the in-card type scale is limited to 13 / 12 /
+   11px so no section invents its own size, weight or grey.
+   ========================================================================== */
+
+/* --- section rules: full-bleed, and omitted on the card's last section ---- */
+/* The card header is a direct <header> child in both the workspace (class
+   .node-header) and the demo (bare element), so it is matched structurally. */
+:is(.generation-node, .generation) > header { height: 36px; padding: 0 8px 0 var(--card-pad); border-bottom: 1px solid var(--line); }
+:is(.generation-node, .generation) .generation-media:not(:empty) { border-bottom: 1px solid var(--line); }
+:is(.generation-node, .generation) .generation-editor { border-bottom: 1px solid var(--line); }
+:is(.generation-node, .generation) .generation-body:last-child .generation-media:not(:empty),
+:is(.generation-node, .generation) .generation-body:last-child .generation-editor { border-bottom: 0; }
+:is(.generation-node, .generation):not(.expanded):not(.has-results) > header { border-bottom: 0; }
+/* Corner safety: the last filled section carries the card's bottom radius so
+   no rule or fill can square off the rounded frame. */
+:is(.generation-node, .generation) .generation-body:last-child .generation-media:not(:empty) > :last-child { border-radius: 0 0 var(--card-radius) var(--card-radius); }
+:is(.generation-node, .generation) .generation-error,
+:is(.generation-node, .generation) .batch-progress { border-radius: 0 0 var(--card-radius) var(--card-radius); }
+
+/* --- header: title at 13/600, input count at 11/400 ----------------------- */
+:is(.generation-node, .generation) .generation-heading span,
+:is(.generation-node, .generation) .generation-heading b { font-size: var(--font-title); font-weight: var(--weight-title); }
+:is(.generation-node, .generation) .generation-heading small { color: var(--tertiary); font-size: var(--font-meta); font-weight: var(--weight-meta); }
+:is(.generation-node, .generation) .dirty-flag { padding: 2px 6px; border-radius: 9999px; background: var(--hover); color: var(--muted); font-size: var(--font-meta); font-style: normal; font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .node-header-actions { gap: 4px !important; }
+:is(.generation-node, .generation) .node-header-actions button { flex: 0 0 var(--hit-size); width: var(--hit-size); height: var(--hit-size); min-width: var(--hit-size); min-height: var(--hit-size); border-radius: var(--control-radius); }
+:is(.generation-node, .generation) .node-header-actions svg { width: var(--icon-size); height: var(--icon-size); }
+:is(.generation-node, .generation) .node-header-actions i,
+:is(.generation-node, .generation) .request-action-divider { flex: 0 0 1px; width: 1px; height: var(--icon-size); background: var(--line); }
+
+/* --- editor: one 12px baseline for every control -------------------------- */
+:is(.generation-node, .generation) .generation-editor { padding: var(--card-pad); }
+:is(.generation-node, .generation) .generation-editor label { gap: 5px; margin-bottom: var(--card-pad); color: var(--muted); font-size: var(--font-body); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .generation-editor label:first-of-type { color: var(--muted); font-size: var(--font-body); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .prompt-label { color: var(--ink) !important; font-size: var(--font-body) !important; font-weight: var(--weight-title) !important; }
+:is(.generation-node, .generation) .generation-editor textarea,
+:is(.generation-node, .generation) .generation-editor select,
+:is(.generation-node, .generation) .selector-trigger { border-radius: var(--control-radius); font-size: var(--font-body); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .generation-editor textarea { min-height: 92px; padding: 8px 10px; }
+:is(.generation-node, .generation) .generation-editor select { height: var(--control-height); padding: 0 26px 0 10px; }
+:is(.generation-node, .generation) .selector-trigger { height: var(--control-height); padding: 0 10px; }
+:is(.generation-node, .generation) .selector-trigger svg { width: var(--icon-size); height: var(--icon-size); }
+:is(.generation-node, .generation) .request-settings { gap: 8px; }
+:is(.generation-node, .generation) .generate,
+:is(.generation-node, .generation) .generate-button { height: 36px; margin-top: 2px; border-radius: var(--control-radius); font-size: var(--font-title); font-weight: var(--weight-title); }
+:is(.generation-node, .generation) .generate:disabled,
+:is(.generation-node, .generation) .generate-button:disabled { background: var(--disabled-bg); color: var(--disabled-ink); }
+:is(.generation-node, .generation) .no-inputs,
+:is(.generation-node, .generation) .no-input { margin: 0 0 var(--card-pad); font-size: var(--font-meta); font-weight: var(--weight-meta); }
+:is(.generation-node, .generation) .more-settings,
+:is(.generation-node, .generation) .unavailable-model { margin-bottom: var(--card-pad); font-size: var(--font-meta); }
+
+/* --- reference thumbnails: index, image and remove share one system ------- */
+:is(.generation-node, .generation) .request-inputs,
+:is(.generation-node, .generation) .inputs { gap: 8px; margin: 0 0 var(--card-pad); padding: 0; }
+:is(.generation-node, .generation) .request-inputs li,
+:is(.generation-node, .generation) .inputs li { flex: 0 0 76px; border-radius: var(--control-radius); }
+:is(.generation-node, .generation) .request-inputs img,
+:is(.generation-node, .generation) .inputs img { width: 76px; height: 58px; }
+:is(.generation-node, .generation) .input-index,
+:is(.generation-node, .generation) .inputs span { top: auto; bottom: 4px; left: 4px; padding: 2px 5px; border-radius: 9999px; background: rgba(23, 23, 23, 0.82); color: var(--white); font-size: var(--font-meta); font-weight: var(--weight-ui); line-height: 1.3; }
+:is(.generation-node, .generation) .request-inputs button,
+:is(.generation-node, .generation) .inputs button { top: 0; right: 0; display: grid; place-items: center; width: var(--hit-size); height: var(--hit-size); padding: 0; border: 0; border-radius: var(--control-radius); background: radial-gradient(circle at center, rgba(255, 255, 255, 0.94) 0 10px, transparent 10px); color: var(--ink); font-size: var(--font-meta); font-weight: var(--weight-ui); line-height: 1; }
+:is(.generation-node, .generation) .request-inputs button:hover,
+:is(.generation-node, .generation) .request-inputs button:focus-visible,
+:is(.generation-node, .generation) .inputs button:hover,
+:is(.generation-node, .generation) .inputs button:focus-visible { background: radial-gradient(circle at center, var(--red-soft) 0 10px, transparent 10px); color: var(--red); }
+:is(.generation-node, .generation) .request-inputs li.missing,
+:is(.generation-node, .generation) .inputs li.missing { width: 76px; height: 58px; font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .request-inputs li.missing > span,
+:is(.generation-node, .generation) .inputs li.missing > span { position: static; top: auto; left: auto; padding: 0 6px; background: transparent; color: var(--tertiary); font-size: var(--font-meta); }
+
+/* --- editor status blocks ------------------------------------------------- */
+:is(.generation-node, .generation) .sentiment-row { margin-bottom: var(--card-pad); font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .sentiment-group button { height: var(--hit-size); padding: 0 9px; border-radius: var(--control-radius); font-size: var(--font-meta); font-weight: var(--weight-ui); }
+
+/* --- results: one radius, one gap, one primary marker --------------------- */
+:is(.generation-node, .generation) .result-grid { gap: 8px; padding: var(--card-pad); }
+:is(.generation-node, .generation) .result-grid.single { padding: var(--card-pad); }
+:is(.generation-node, .generation) .result-tile,
+:is(.generation-node, .generation) .result-tile > img,
+:is(.generation-node, .generation) .result-tile > .result-state { border-radius: var(--card-radius); }
+:is(.generation-node, .generation) .result-state strong { font-size: var(--font-body); font-weight: var(--weight-title); }
+:is(.generation-node, .generation) .result-state small { font-size: var(--font-meta); font-weight: var(--weight-meta); }
+:is(.generation-node, .generation) .result-state .retry-action { height: var(--hit-size); padding: 0 9px; border-radius: var(--control-radius); font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .primary-tag { left: 6px; bottom: 6px; padding: 2px 6px; font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .batch-progress,
+:is(.generation-node, .generation) .generation-error { padding: 8px var(--card-pad); font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .generation-error .retry-action { height: var(--hit-size); padding: 0 9px; border-radius: var(--control-radius); font-size: var(--font-meta); font-weight: var(--weight-ui); }
+
+/* --- rail: the single result readout plus secondary actions --------------- */
+:is(.generation-node, .generation) .generation-rail { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 var(--card-pad); border-radius: 0 0 var(--card-radius) var(--card-radius); background: var(--white); }
+:is(.generation-node, .generation) .generation-rail .rail-meta,
+:is(.generation-node, .generation) .generation-rail > span { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--font-meta); font-weight: var(--weight-ui); text-overflow: ellipsis; white-space: nowrap; }
+:is(.generation-node, .generation) .generation-rail .image-actions,
+:is(.generation-node, .generation) .generation-rail .node-action-rail { margin-left: auto; }
+:is(.generation-node, .generation) .node-action-rail a,
+:is(.generation-node, .generation) .node-action-rail button { flex: 0 0 var(--hit-size); width: var(--hit-size); height: var(--hit-size); border-radius: var(--control-radius); }
+:is(.generation-node, .generation) .node-action-rail svg { width: var(--icon-size); height: var(--icon-size); }
+:is(.generation-node, .generation) .node-action-rail .retry-action { flex-basis: auto; width: auto; padding: 0 9px; font-size: var(--font-meta); }
+:is(.generation-node, .generation) .edit-action { flex: 0 0 auto !important; width: auto !important; padding: 0 10px !important; color: var(--muted); font-size: var(--font-body) !important; font-weight: var(--weight-ui); white-space: nowrap; }
+:is(.generation-node, .generation) .edit-action:hover,
+:is(.generation-node, .generation) .edit-action:focus-visible { background: var(--hover); color: var(--ink); }
+
+/* The reference-image card keeps the same 11px floor for its secondary label
+   so the two card types never disagree on type size. */
+.image-node-bar > span,
+.image footer > span { font-size: var(--font-meta); font-weight: var(--weight-ui); }
+.image-node-bar .node-action-rail a,
+.image-node-bar .node-action-rail button { border-radius: var(--control-radius); }
+
+/* --- touch targets -------------------------------------------------------- */
+@media (max-width: 768px) {
+  :is(.generation-node, .generation) .node-header-actions button,
+  :is(.generation-node, .generation) .node-action-rail a,
+  :is(.generation-node, .generation) .node-action-rail button,
+  :is(.generation-node, .generation) .request-inputs button,
+  :is(.generation-node, .generation) .inputs button,
+  :is(.generation-node, .generation) .sentiment-group button {
+    flex: 0 0 var(--hit-size-touch); width: var(--hit-size-touch); height: var(--hit-size-touch);
+    min-width: var(--hit-size-touch); min-height: var(--hit-size-touch);
+  }
+  :is(.generation-node, .generation) .generation-rail { height: 44px; }
+  :is(.generation-node, .generation) .generation-editor,
+  :is(.generation-node, .generation) .result-grid { padding: var(--card-pad); }
+}
+
+/* Platform/model popover lives inside the card, so it uses the card's scale
+   instead of inventing 9px, 10px and 700. */
+:is(.generation-node, .generation) .selector-popover header b,
+:is(.generation-node, .generation) .selector-popover header strong { font-size: var(--font-title); font-weight: var(--weight-title); }
+:is(.generation-node, .generation) .selector-section > span { font-size: var(--font-meta); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .selector-popover button { font-size: var(--font-body); font-weight: var(--weight-ui); }
+:is(.generation-node, .generation) .provider-chips button,
+:is(.generation-node, .generation) .resolution-chips button { border-radius: var(--control-radius); }
+:is(.generation-node, .generation) .model-card-grid small { font-size: var(--font-meta); font-weight: var(--weight-meta); }
+:is(.generation-node, .generation) .model-card-grid b { font-size: var(--font-body); font-weight: var(--weight-ui); }
+
+/* Demo rail reuses the image-action rail; keep its icons and radii identical to
+   the workspace rail instead of the older 15px / 5px pair. */
+:is(.generation-node, .generation) .generation-rail .image-actions a,
+:is(.generation-node, .generation) .generation-rail .image-actions button { flex: 0 0 var(--hit-size); width: var(--hit-size) !important; height: var(--hit-size) !important; border-radius: var(--control-radius); }
+:is(.generation-node, .generation) .generation-rail .image-actions svg { width: var(--icon-size); height: var(--icon-size); }
