@@ -776,6 +776,16 @@ th { color: var(--tertiary); font-size: 10px; font-weight: 500; }
 .provider-card > strong { display: block; margin: 18px 0 7px; font-size: 22px; }
 .provider-card > strong small { color: var(--tertiary); font-size: 10px; font-weight: 400; }
 .provider-card > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.native-credentials-panel { margin-bottom: 16px; }
+.native-credential-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.credential-card + .credential-card { border-left: 1px solid var(--line); }
+.credential-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.credential-card > header h3 { margin: 0; font-size: 13px; }
+.credential-card > header p { margin: 3px 0 0; color: var(--tertiary); font-size: 10px; }
+.credential-clear { display: grid; gap: 7px; margin: 2px 0 0; padding: 10px; border: 1px solid rgba(179,58,50,.18); border-radius: 6px; background: var(--red-soft); }
+.credential-clear legend { padding: 0 4px; color: var(--red); font-size: 10px; }
+.stack-form .credential-clear label { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); }
+.stack-form .credential-clear input { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 1px; }
 .provider-config-panel > form { padding: 0; }
 .provider-credentials, .model-row-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; }
 .model-editor-heading { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -802,7 +812,8 @@ th { color: var(--tertiary); font-size: 10px; font-weight: 500; }
 }
 @media (max-width: 768px) {
   .account-shell { padding: 24px 12px 48px; }
-  .account-grid, .dashboard-grid, .provider-card-grid { grid-template-columns: 1fr; }
+  .account-grid, .dashboard-grid, .provider-card-grid, .native-credential-grid { grid-template-columns: 1fr; }
+  .credential-card + .credential-card { border-top: 1px solid var(--line); border-left: 0; }
   .admin-layout { padding: 50px 0 0; }
   .admin-mobile-bar { position: fixed; inset: 0 0 auto; z-index: 45; display: flex; align-items: center; justify-content: space-between; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--white); }
   .admin-mobile-bar .brand { gap: 8px; text-decoration: none; }

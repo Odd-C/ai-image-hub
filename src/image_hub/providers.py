@@ -4,6 +4,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -76,6 +77,8 @@ API_RESOLUTIONS = frozenset({"1K", "2K", "4K"})
 API_QUALITIES = frozenset({"standard"})
 _API_ENABLED_VALUES = frozenset({"1", "true", "on", "启用"})
 _API_DISABLED_VALUES = frozenset({"0", "false", "off", "停用"})
+_NATIVE_CREDENTIALS_FILE = "native-provider-credentials.json"
+_CONFIG_ID_LENGTH = 32
 
 
 def _api_config() -> dict:
@@ -98,6 +101,7 @@ def _api_config() -> dict:
 def _atomic_write_private_json(path: Path, payload: dict) -> None:
     """Atomically replace a private JSON file that is mode 0600 from creation."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     descriptor = None
     try:
@@ -119,6 +123,150 @@ def _atomic_write_private_json(path: Path, payload: dict) -> None:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _native_credentials() -> dict:
+    path = settings.storage_root / "private" / _NATIVE_CREDENTIALS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _validated_secret(value: str, label: str, *, allow_empty: bool = False) -> str:
+    if any(character in value for character in ("\r", "\n", "\0")):
+        raise ProviderConfigError(f"{label} 不得包含换行或 NUL 字符")
+    normalized = value.strip()
+    if not normalized and allow_empty:
+        return ""
+    if not 1 <= len(normalized) <= 1000:
+        raise ProviderConfigError(f"{label} 长度必须在 1 到 1000 个字符之间")
+    return normalized
+
+
+def save_libtv_credentials(token: str, *, clear: bool = False) -> str:
+    """Update only the admin-managed LibTV token; blank means keep."""
+    payload = _native_credentials()
+    if any(character in token for character in ("\r", "\n", "\0")):
+        raise ProviderConfigError("LibTV Token 不得包含换行或 NUL 字符")
+    if clear:
+        if token.strip():
+            raise ProviderConfigError("清除 LibTV Token 时不能同时提交新值")
+        payload.pop("libtv_token", None)
+        action = "cleared"
+    elif token.strip():
+        payload["libtv_token"] = _validated_secret(token, "LibTV Token")
+        action = "saved"
+    else:
+        action = "kept"
+    _atomic_write_private_json(
+        settings.storage_root / "private" / _NATIVE_CREDENTIALS_FILE, payload
+    )
+    return action
+
+
+def save_lovart_credentials(
+    access_key: str, secret_key: str, *, clear: bool = False
+) -> str:
+    """Update the admin-managed Lovart credential pair; two blanks mean keep."""
+    payload = _native_credentials()
+    if any(
+        character in value
+        for value in (access_key, secret_key)
+        for character in ("\r", "\n", "\0")
+    ):
+        raise ProviderConfigError("Lovart 凭据不得包含换行或 NUL 字符")
+    if clear:
+        if access_key.strip() or secret_key.strip():
+            raise ProviderConfigError("清除 Lovart 凭据时不能同时提交新值")
+        payload.pop("lovart_access_key", None)
+        payload.pop("lovart_secret_key", None)
+        action = "cleared"
+    elif access_key.strip() or secret_key.strip():
+        if not access_key.strip() or not secret_key.strip():
+            raise ProviderConfigError("Lovart Access Key 与 Secret Key 必须成对填写")
+        payload["lovart_access_key"] = _validated_secret(access_key, "Lovart Access Key")
+        payload["lovart_secret_key"] = _validated_secret(secret_key, "Lovart Secret Key")
+        action = "saved"
+    else:
+        action = "kept"
+    _atomic_write_private_json(
+        settings.storage_root / "private" / _NATIVE_CREDENTIALS_FILE, payload
+    )
+    return action
+
+
+def _libtv_cli_login_state() -> bool | None:
+    """Recognize common CLI login records without exposing or copying their contents."""
+    path = Path.home() / ".libtv" / "credentials.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    known_fields = ("token", "access_token", "accessToken")
+    if not any(field in payload for field in known_fields):
+        return None
+    return any(
+        isinstance(payload.get(field), str) and payload[field].strip()
+        for field in known_fields
+    )
+
+
+def _runtime_secret(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        return _validated_secret(value, "平台凭据", allow_empty=True)
+    except ProviderConfigError:
+        return ""
+
+
+def _resolved_libtv_token() -> tuple[str, str]:
+    managed = _runtime_secret(_native_credentials().get("libtv_token", ""))
+    if managed:
+        return managed, "管理后台已配置"
+    environment = _runtime_secret(os.environ.get("LIBTV_TOKEN", ""))
+    if environment:
+        return environment, "环境已配置"
+    login_state = _libtv_cli_login_state()
+    if login_state is True:
+        return "", "CLI 已登录"
+    if login_state is None:
+        return "", "CLI 登录状态无法确认"
+    return "", "未配置"
+
+
+def _resolved_lovart_credentials() -> tuple[str, str, str]:
+    payload = _native_credentials()
+    managed_access = _runtime_secret(payload.get("lovart_access_key", ""))
+    managed_secret = _runtime_secret(payload.get("lovart_secret_key", ""))
+    if managed_access and managed_secret:
+        return managed_access, managed_secret, "管理后台已配置"
+    environment_access = _runtime_secret(settings.lovart_access_key)
+    environment_secret = _runtime_secret(settings.lovart_secret_key)
+    if environment_access and environment_secret:
+        return environment_access, environment_secret, "环境已配置"
+    return "", "", "未配置"
+
+
+def public_native_credentials() -> dict:
+    """Return only booleans and safe source labels for the admin page."""
+    libtv_token, libtv_source = _resolved_libtv_token()
+    lovart_access, lovart_secret, lovart_source = _resolved_lovart_credentials()
+    return {
+        "has_libtv_token": bool(libtv_token),
+        "has_lovart_access_key": bool(lovart_access),
+        "has_lovart_secret_key": bool(lovart_secret),
+        "libtv_source": libtv_source,
+        "lovart_source": lovart_source,
+    }
 
 
 def _parse_allowlist() -> tuple[set[str], tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]]:
@@ -298,26 +446,87 @@ def _freeze_api_execution_config() -> str:
     return identity
 
 
+def _current_native_execution_config(provider: str) -> dict:
+    if provider == "libtv":
+        token, _ = _resolved_libtv_token()
+        return {
+            "provider": "libtv",
+            "token": token,
+            "cli_path": str(settings.libtv_cli),
+        }
+    if provider == "lovart":
+        access_key, secret_key, _ = _resolved_lovart_credentials()
+        if not access_key or not secret_key:
+            raise ProviderConfigError("Lovart 凭据未成对配置")
+        return {
+            "provider": "lovart",
+            "access_key": access_key,
+            "secret_key": secret_key,
+            "base_url": settings.lovart_base_url,
+            "skill_script": str(settings.lovart_skill_script),
+        }
+    raise ProviderConfigError("不支持冻结该平台配置")
+
+
+def _freeze_native_execution_config(provider: str) -> str:
+    config = _current_native_execution_config(provider)
+    identity = _execution_config_id(config)
+    path = settings.storage_root / "provider-configs" / f"{identity}.json"
+    if path.exists():
+        _load_native_execution_config(identity, provider)
+    else:
+        _atomic_write_private_json(path, config)
+    return identity
+
+
 def freeze_profile_execution(profile: ModelProfile) -> ModelProfile:
     """Attach an immutable server-only route identity before a task is queued."""
-    if profile.provider != "api":
+    if profile.provider == "api":
+        identity = _freeze_api_execution_config()
+    elif profile.provider in {"libtv", "lovart"}:
+        identity = _freeze_native_execution_config(profile.provider)
+    else:
         return profile
-    identity = _freeze_api_execution_config()
     if profile.execution_config_id and profile.execution_config_id != identity:
-        raise ProviderConfigError("API 配置在提交期间发生变化，请重新确认模型后提交")
+        raise ProviderConfigError("平台配置在提交期间发生变化，请重新确认模型后提交")
     return replace(profile, execution_config_id=identity)
 
 
-def _load_api_execution_config(identity: str) -> dict:
-    if not identity or not all(character in "0123456789abcdef" for character in identity):
-        raise RuntimeError("API 任务缺少有效的冻结配置标识")
+def _valid_config_identity(identity: str) -> bool:
+    return len(identity) == _CONFIG_ID_LENGTH and all(
+        character in "0123456789abcdef" for character in identity
+    )
+
+
+def _load_private_execution_config(identity: str, error_prefix: str) -> dict:
+    if not _valid_config_identity(identity):
+        raise RuntimeError(f"{error_prefix}任务缺少有效的冻结配置标识")
     path = settings.storage_root / "provider-configs" / f"{identity}.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("API 任务的冻结配置不存在或已损坏") from exc
+        raise RuntimeError(f"{error_prefix}任务的冻结配置不存在或已损坏") from exc
     if not isinstance(payload, dict) or _execution_config_id(payload) != identity:
-        raise RuntimeError("API 任务的冻结配置校验失败")
+        raise RuntimeError(f"{error_prefix}任务的冻结配置校验失败")
+    return payload
+
+
+def _load_native_execution_config(identity: str, provider: str) -> dict:
+    payload = _load_private_execution_config(identity, provider.capitalize())
+    if payload.get("provider") != provider:
+        raise RuntimeError("任务冻结配置的平台不匹配")
+    required = (
+        ("cli_path",)
+        if provider == "libtv"
+        else ("access_key", "secret_key", "base_url", "skill_script")
+    )
+    if any(not isinstance(payload.get(field), str) or not payload[field] for field in required):
+        raise RuntimeError("任务冻结配置内容无效")
+    return payload
+
+
+def _load_api_execution_config(identity: str) -> dict:
+    payload = _load_private_execution_config(identity, "API ")
     current_ips = _resolve_and_validate_endpoint(str(payload.get("base_url", "")))
     if tuple(payload.get("resolved_ips", ())) != current_ips:
         raise RuntimeError("API 上游 DNS 已变化，已阻止可能的重绑定请求")
@@ -325,10 +534,13 @@ def _load_api_execution_config(identity: str) -> dict:
 
 
 def model_profiles() -> tuple[ModelProfile, ...]:
+    libtv_token, libtv_source = _resolved_libtv_token()
+    libtv_login_usable = libtv_source in {"CLI 已登录", "CLI 登录状态无法确认"}
+    libtv_ready = settings.libtv_cli.is_file() and bool(libtv_token or libtv_login_usable)
     profiles = [
         ModelProfile(
             id=f"libtv:{key}", label=label, provider="libtv", upstream_model=label,
-            enabled=settings.libtv_cli.is_file(),
+            enabled=libtv_ready,
             resolutions=(
                 ("1K",)
                 if key == "z-image"
@@ -339,8 +551,9 @@ def model_profiles() -> tuple[ModelProfile, ...]:
         )
         for key, label in LIBTV_MODELS
     ]
+    lovart_access_key, lovart_secret_key, _ = _resolved_lovart_credentials()
     lovart_ready = bool(
-        settings.lovart_access_key and settings.lovart_secret_key and settings.lovart_skill_script.is_file()
+        lovart_access_key and lovart_secret_key and settings.lovart_skill_script.is_file()
     )
     profiles.extend(
         [
@@ -421,16 +634,55 @@ def _checkpoint(generation: Generation) -> None:
         session.commit()
 
 
-def _run_libtv(*args: str) -> dict:
+def _legacy_native_execution_config(provider: str) -> dict:
+    """Resolve mutable deployment configuration only for pre-freeze legacy tasks."""
+    return _current_native_execution_config(provider)
+
+
+def _native_execution_config(profile: ModelProfile) -> dict:
+    if profile.execution_config_id:
+        return _load_native_execution_config(profile.execution_config_id, profile.provider)
+    return _legacy_native_execution_config(profile.provider)
+
+
+def _sanitize_provider_output(text: str, *secret_values: str) -> str:
+    sanitized = text
+    for value in secret_values:
+        if value:
+            sanitized = sanitized.replace(value, "[已隐藏]")
+    sanitized = re.sub(r"https?://\S+", "[已隐藏地址]", sanitized)
+    sanitized = re.sub(
+        r"(?i)(bearer|api[_ -]?key|access[_ -]?key|secret[_ -]?key|token)"
+        r"\s*[:=]?\s*\S+",
+        r"\1 [已隐藏]",
+        sanitized,
+    )
+    return sanitized[-2000:]
+
+
+def _libtv_env(config: dict) -> dict[str, str]:
+    env = os.environ.copy()
+    token = str(config.get("token", ""))
+    if token:
+        env["LIBTV_TOKEN"] = token
+    else:
+        env.pop("LIBTV_TOKEN", None)
+    return env
+
+
+def _run_libtv(*args: str, execution_config: dict | None = None) -> dict:
+    config = execution_config or _legacy_native_execution_config("libtv")
+    token = str(config.get("token", ""))
     try:
         result = subprocess.run(
-            [str(settings.libtv_cli), *args], capture_output=True, text=True, check=False,
-            timeout=settings.provider_command_timeout_seconds,
+            [str(config["cli_path"]), *args], capture_output=True, text=True, check=False,
+            env=_libtv_env(config), timeout=settings.provider_command_timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("LibTV 命令执行超时") from exc
     if result.returncode:
-        raise RuntimeError((result.stderr.strip() or result.stdout.strip() or "LibTV 执行失败")[-2000:])
+        message = result.stderr.strip() or result.stdout.strip() or "LibTV 执行失败"
+        raise RuntimeError(_sanitize_provider_output(message, token))
     for line in reversed(result.stdout.splitlines()):
         if line.strip().startswith("{"):
             try:
@@ -441,14 +693,21 @@ def _run_libtv(*args: str) -> dict:
 
 
 def _execute_libtv(generation: Generation, profile: ModelProfile) -> None:
-    created = _run_libtv("project", "create", f"ImageHub-{generation.id[:8]}", "--team-id", "0", "--workspace", "0")
+    config = _native_execution_config(profile)
+    created = _run_libtv(
+        "project", "create", f"ImageHub-{generation.id[:8]}", "--team-id", "0",
+        "--workspace", "0", execution_config=config,
+    )
     project_id = created["projectMeta"]["uuid"]
     generation.external_project_id = project_id
     _checkpoint(generation)
     nodes = []
     for index, path in enumerate(_references(generation), 1):
         node = f"参考图{index}-{generation.id[:6]}"
-        _run_libtv("upload", node, "--project", project_id, "--type", "image", "--resource", str(path))
+        _run_libtv(
+            "upload", node, "--project", project_id, "--type", "image",
+            "--resource", str(path), execution_config=config,
+        )
         nodes.append(node)
     params = _params(generation)
     output_node = f"结果-{generation.id[:8]}"
@@ -468,22 +727,23 @@ def _execute_libtv(generation: Generation, profile: ModelProfile) -> None:
     for node in nodes:
         command.extend(["--left", node])
     command.append("--run")
-    result = _run_libtv(*command)
+    result = _run_libtv(*command, execution_config=config)
     generation.external_task_id = str(result.get("taskId") or result.get("nodeKey") or output_node)
     _checkpoint(generation)
     output_dir = settings.storage_root / f"generations/{generation.id}/results"
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         download = subprocess.run(
-            [str(settings.libtv_cli), "download", "--project", project_id, "--node", output_node,
+            [str(config["cli_path"]), "download", "--project", project_id, "--node", output_node,
              "--out", str(output_dir), "--without-ai-watermark", "--vip"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, env=_libtv_env(config),
             timeout=settings.provider_command_timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("LibTV 下载超时") from exc
     if download.returncode:
-        raise RuntimeError((download.stderr.strip() or download.stdout.strip() or "LibTV 下载失败")[-2000:])
+        message = download.stderr.strip() or download.stdout.strip() or "LibTV 下载失败"
+        raise RuntimeError(_sanitize_provider_output(message, str(config.get("token", ""))))
     files = []
     for path in output_dir.iterdir():
         try:
@@ -496,27 +756,35 @@ def _execute_libtv(generation: Generation, profile: ModelProfile) -> None:
     generation.artifact_storage_key = str(max(files, key=lambda path: path.stat().st_mtime).relative_to(settings.storage_root))
 
 
-def _run_lovart(*args: str) -> dict:
+def _run_lovart(*args: str, execution_config: dict | None = None) -> dict:
+    config = execution_config or _legacy_native_execution_config("lovart")
+    access_key = str(config["access_key"])
+    secret_key = str(config["secret_key"])
     env = os.environ.copy()
     env.update(
-        LOVART_ACCESS_KEY=settings.lovart_access_key,
-        LOVART_SECRET_KEY=settings.lovart_secret_key,
-        LOVART_BASE_URL=settings.lovart_base_url,
+        LOVART_ACCESS_KEY=access_key,
+        LOVART_SECRET_KEY=secret_key,
+        LOVART_BASE_URL=str(config["base_url"]),
     )
     try:
         result = subprocess.run(
-            ["python3", str(settings.lovart_skill_script), *args], capture_output=True,
+            ["python3", str(config["skill_script"]), *args], capture_output=True,
             text=True, check=False, env=env, timeout=settings.provider_command_timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Lovart 命令执行超时") from exc
     if result.returncode:
-        raise RuntimeError((result.stderr.strip() or result.stdout.strip() or "Lovart 执行失败")[-2000:])
-    return json.loads(result.stdout)
+        message = result.stderr.strip() or result.stdout.strip() or "Lovart 执行失败"
+        raise RuntimeError(_sanitize_provider_output(message, access_key, secret_key))
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Lovart 返回结果无法解析") from exc
 
 
 def _execute_lovart(generation: Generation, profile: ModelProfile) -> None:
-    created = _run_lovart("create-project")
+    config = _native_execution_config(profile)
+    created = _run_lovart("create-project", execution_config=config)
     project_id = str(created.get("project_id") or "")
     if not project_id:
         raise RuntimeError("Lovart 未返回 Project ID")
@@ -524,7 +792,7 @@ def _execute_lovart(generation: Generation, profile: ModelProfile) -> None:
     _checkpoint(generation)
     attachments = []
     for path in _references(generation):
-        uploaded = _run_lovart("upload", "--file", str(path))
+        uploaded = _run_lovart("upload", "--file", str(path), execution_config=config)
         if not uploaded.get("url"):
             raise RuntimeError("Lovart 参考图上传失败")
         attachments.append(uploaded["url"])
@@ -537,7 +805,7 @@ def _execute_lovart(generation: Generation, profile: ModelProfile) -> None:
     ]
     if attachments:
         command.extend(["--attachments", *attachments])
-    result = _run_lovart(*command)
+    result = _run_lovart(*command, execution_config=config)
     generation.external_task_id = str(result.get("thread_id") or "")
     _checkpoint(generation)
     if result.get("final_status") == "pending_confirmation":
@@ -634,6 +902,21 @@ def _validate_frozen_capabilities(generation: Generation, profile: ModelProfile)
         raise RuntimeError("任务参考图数量超过冻结能力上限")
 
 
+def _generation_frozen_profile(generation: Generation) -> ModelProfile | None:
+    try:
+        payload = json.loads(generation.provider_snapshot_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ModelProfile(**payload)
+    except TypeError:
+        if payload.get("execution_config_id"):
+            return None
+        return get_profile(f"{generation.provider}:{generation.model_id}")
+
+
 def execute_generation(generation_id: str) -> None:
     from image_hub.db import SessionLocal
 
@@ -641,10 +924,7 @@ def execute_generation(generation_id: str) -> None:
         generation = session.get(Generation, generation_id)
         if not generation:
             return
-        try:
-            profile = ModelProfile(**json.loads(generation.provider_snapshot_json or "{}"))
-        except (TypeError, json.JSONDecodeError):
-            profile = get_profile(f"{generation.provider}:{generation.model_id}")
+        profile = _generation_frozen_profile(generation)
         generation.status = "running"
         session.commit()
         try:
@@ -685,11 +965,18 @@ def recover_generation(generation_id: str) -> tuple[bool, str]:
             raise RuntimeError("任务不处于待恢复状态")
         output_dir = settings.storage_root / f"generations/{generation.id}/results"
         output_dir.mkdir(parents=True, exist_ok=True)
+        profile = _generation_frozen_profile(generation)
+        if not profile:
+            raise RuntimeError("任务缺少有效的平台快照")
         if generation.provider == "libtv":
             if not generation.external_project_id:
                 raise RuntimeError("LibTV 任务缺少外部 Project ID")
+            config = _native_execution_config(profile)
             output_node = f"结果-{generation.id[:8]}"
-            result = _run_libtv("node", output_node, "--project", generation.external_project_id)
+            result = _run_libtv(
+                "node", output_node, "--project", generation.external_project_id,
+                execution_config=config,
+            )
             data = result.get("data", {}) if isinstance(result, dict) else {}
             urls = data.get("url", []) if isinstance(data, dict) else []
             task_info = data.get("taskInfo", {}) if isinstance(data, dict) else {}
@@ -700,13 +987,14 @@ def recover_generation(generation_id: str) -> tuple[bool, str]:
                 generation.error_message = message
                 session.commit()
                 return False, message
-            _execute_libtv_download(generation, output_node, output_dir)
+            _execute_libtv_download(generation, output_node, output_dir, config)
         elif generation.provider == "lovart":
             if not generation.external_task_id:
                 raise RuntimeError("Lovart 任务缺少外部 Thread ID")
+            config = _native_execution_config(profile)
             result = _run_lovart(
                 "result", "--thread-id", generation.external_task_id, "--json", "--download",
-                "--output-dir", str(output_dir),
+                "--output-dir", str(output_dir), execution_config=config,
             )
             downloaded = [
                 item for item in result.get("downloaded", [])
@@ -734,19 +1022,20 @@ def recover_generation(generation_id: str) -> tuple[bool, str]:
 
 
 def _execute_libtv_download(
-    generation: Generation, output_node: str, output_dir: Path
+    generation: Generation, output_node: str, output_dir: Path, config: dict
 ) -> None:
     try:
         download = subprocess.run(
-            [str(settings.libtv_cli), "download", "--project", generation.external_project_id,
+            [str(config["cli_path"]), "download", "--project", generation.external_project_id,
              "--node", output_node, "--out", str(output_dir), "--without-ai-watermark", "--vip"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, env=_libtv_env(config),
             timeout=settings.provider_command_timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("LibTV 恢复下载超时") from exc
     if download.returncode:
-        raise RuntimeError((download.stderr.strip() or download.stdout.strip() or "LibTV 恢复下载失败")[-2000:])
+        message = download.stderr.strip() or download.stdout.strip() or "LibTV 恢复下载失败"
+        raise RuntimeError(_sanitize_provider_output(message, str(config.get("token", ""))))
     files = []
     for path in output_dir.iterdir():
         try:

@@ -24,8 +24,11 @@ from image_hub.providers import (
     ProviderConfigError,
     model_profiles,
     public_api_config,
+    public_native_credentials,
     recover_generation,
     save_api_config,
+    save_libtv_credentials,
+    save_lovart_credentials,
 )
 
 router = APIRouter()
@@ -540,8 +543,78 @@ def admin_providers(request: Request, session: Session = Depends(get_session)):
             provider_cards=provider_cards,
             api_profiles=api_profiles,
             api_config=public_api_config(),
+            native_credentials=public_native_credentials(),
         ),
     )
+
+
+@router.post("/admin/providers/libtv/credentials")
+def configure_libtv_credentials(
+    request: Request,
+    libtv_token: str = Form(""),
+    clear_credentials: str = Form(""),
+    confirm_clear: str = Form(""),
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
+    admin = current_user(request, session)
+    require_admin(admin)
+    clearing = clear_credentials == "on"
+    if clearing and confirm_clear != "clear-libtv":
+        _flash(request, "error", "清除 LibTV Token 需要再次明确确认")
+        return _redirect("/admin/providers")
+    try:
+        result = save_libtv_credentials(libtv_token, clear=clearing)
+    except ProviderConfigError as exc:
+        _flash(request, "error", str(exc))
+        return _redirect("/admin/providers")
+    action = (
+        "provider.libtv_credentials_cleared"
+        if result == "cleared"
+        else "provider.libtv_credentials_saved"
+    )
+    summary = f"LibTV 凭据{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持'}"
+    _audit(session, admin, action, "provider", "libtv", summary)
+    session.commit()
+    _flash(request, "success", summary)
+    return _redirect("/admin/providers")
+
+
+@router.post("/admin/providers/lovart/credentials")
+def configure_lovart_credentials(
+    request: Request,
+    lovart_access_key: str = Form(""),
+    lovart_secret_key: str = Form(""),
+    clear_credentials: str = Form(""),
+    confirm_clear: str = Form(""),
+    csrf: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    require_csrf(request, csrf)
+    admin = current_user(request, session)
+    require_admin(admin)
+    clearing = clear_credentials == "on"
+    if clearing and confirm_clear != "clear-lovart":
+        _flash(request, "error", "清除 Lovart 凭据需要再次明确确认")
+        return _redirect("/admin/providers")
+    try:
+        result = save_lovart_credentials(
+            lovart_access_key, lovart_secret_key, clear=clearing
+        )
+    except ProviderConfigError as exc:
+        _flash(request, "error", str(exc))
+        return _redirect("/admin/providers")
+    action = (
+        "provider.lovart_credentials_cleared"
+        if result == "cleared"
+        else "provider.lovart_credentials_saved"
+    )
+    summary = f"Lovart 凭据{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持'}"
+    _audit(session, admin, action, "provider", "lovart", summary)
+    session.commit()
+    _flash(request, "success", summary)
+    return _redirect("/admin/providers")
 
 
 @router.post("/admin/providers/api")
