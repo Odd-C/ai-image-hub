@@ -149,14 +149,16 @@ function editor(n){
 }
 /* The rail owns the single result-count readout; the header only reports the
    input count (plus a status while no result summary exists yet). The card's
-   only delete control lives in the header, and the collapse-to-result entry
-   appears here only while the editor is closed. */
+   only delete control lives in the header, and expanding the parameters is
+   owned by a single click on the result (plus the header chevron for the
+   keyboard path), so the rail keeps just the readout and the two file actions:
+   the readout takes the free space and the actions sit flush right, which
+   keeps the footer balanced without an empty slot. */
 function rail(n){
   const batch=displayBatch(n);if(!batch)return'';
   const results=batchResults(batch),primary=primaryOf(n),ready=Boolean(primary?.status==='succeeded'&&primary.artifactUrl),ok=results.filter(r=>r.status==='succeeded').length;
   const meta=`${ok}/${results.length} 张结果${n.error?' · 有失败':''}`;
-  const edit=n.expanded?'':'<button class="edit-action" data-edit aria-expanded="false" title="编辑并重新生成">编辑并重新生成</button>';
-  return `<footer class="generation-rail"><span class="rail-meta" title="${esc(meta)}">${esc(meta)}</span><div class="image-actions"><div class="file-actions"><button data-open-result ${ready?'':'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button data-download-result ${ready?'':'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div>${edit}</div></footer>`;
+  return `<footer class="generation-rail"><span class="rail-meta" title="${esc(meta)}">${esc(meta)}</span><div class="image-actions"><div class="file-actions"><button data-open-result ${ready?'':'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button data-download-result ${ready?'':'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div></div></footer>`;
 }
 function generationMarkup(n){
   const active=batchResults(n.activeBatch).length?n.activeBatch:null,batch=active||(batchResults(n.attempt).length?n.attempt:null),selected=state.selected.includes(n.id);
@@ -174,7 +176,6 @@ function render(){state.selected=state.selected.filter(id=>node(id));$('#nodes')
 /* The header chevron is the only control that returns a card to the collapsed
    result summary, so it also owns the expand pin. */
 function toggleGeneration(n){if(!isGeneration(n))return;n.expanded=!n.expanded;n.expandedPinned=n.expanded;render();requestAnimationFrame(()=>requestAnimationFrame(()=>{links();minimap()}));save()}
-function setExpanded(n,expanded,pinned){if(!isGeneration(n))return;const next=Boolean(expanded),pin=next?Boolean(pinned):false,changed=n.expanded!==next||n.expandedPinned!==pin;n.expanded=next;n.expandedPinned=pin;if(changed){render();requestAnimationFrame(()=>requestAnimationFrame(()=>{links();minimap()}));save()}}
 /* Single click expands in place (and marks the primary result when the batch
    holds several images); double click is handled separately by the viewer.
    Expanding here is a user action, so it pins the card against the automatic
@@ -382,7 +383,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     }
     const batch=displayBatch(n);
     if(e.target.closest('[data-toggle]'))toggleGeneration(n);
-    else if(e.target.closest('[data-edit]'))setExpanded(n,true,true);
     else if(e.target.closest('[data-generate]'))generate(n);
     else if(e.target.closest('[data-open-result]')){const p=primaryOf(n);if(p?.artifactUrl)viewer({src:p.artifactUrl,title:p.model||'生成结果'})}
     else if(e.target.closest('[data-download-result]')){const p=primaryOf(n);if(p?.artifactUrl){const a=document.createElement('a');a.href=p.artifactUrl;a.download='';a.click()}}
@@ -470,13 +470,26 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(store.projects.some(p=>p.id!==project?.id&&p.name===name)){toast('项目名称已存在',true);input.focus();input.select();return}
     if(project){project.name=name;closeRenameProjectDialog();render();save()}
   };
-  $('#history-button').onclick=()=>{history();$('#history').hidden=false};
-  $('#close-history').onclick=()=>$('#history').hidden=true;
+  /* One shared 画布 entry in the top bar replaces the scattered per-view return
+     buttons: it closes history, account settings and administration, and it
+     reports the current view through aria-current instead of doing nothing. */
+  const demoViews={history:'#history',account:'#demo-account',admin:'#demo-admin'};
+  function syncCanvasNav(){
+    const button=$('#canvas-button');
+    if(Object.values(demoViews).every(selector=>$(selector).hidden))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
+  }
+  function setDemoView(view){
+    Object.entries(demoViews).forEach(([name,selector])=>{$(selector).hidden=name!==view});
+    $('#demo-admin').classList.remove('nav-open');$('#demo-admin-menu').setAttribute('aria-expanded','false');
+    syncCanvasNav();
+  }
+  $('#canvas-button').onclick=()=>setDemoView('canvas');
+  $('#history-button').onclick=()=>{history();setDemoView('history')};
   $('#history-grid').onclick=e=>{
     const locate=e.target.dataset.locate,cont=e.target.dataset.continue,resultId=e.target.dataset.resultId;
     if(!locate&&!cont)return;
     const n=node(locate||cont);if(!n)return;
-    $('#history').hidden=true;
+    setDemoView('canvas');
     if(locate){
       select(n.id,false);
       const v=vp.getBoundingClientRect();
@@ -494,9 +507,10 @@ const setDemoAdminView=view=>{$$('[data-admin-panel]').forEach(panel=>panel.hidd
 const addDemoAudit=(action,summary)=>{$('#demo-audit-rows').insertAdjacentHTML('afterbegin',`<tr><td>刚刚</td><td>预览管理员</td><td>${esc(action)}</td><td>${esc(summary)}</td></tr>`)};
 let confirmAction=null;const demoConfirm=(title,copy,action)=>{$('#demo-confirm-title').textContent=title;$('#demo-confirm-copy').textContent=copy;confirmAction=action;$('#demo-confirm').showModal()};
 $('#demo-confirm').addEventListener('close',()=>{if($('#demo-confirm').returnValue==='confirm'&&confirmAction)confirmAction();confirmAction=null});
-$('#account-button').onclick=()=>{$('#demo-account').hidden=false};$('[data-close-account]').onclick=()=>$('#demo-account').hidden=true;$('#demo-save-profile').onclick=()=>toast('虚构显示名称已在本地预览中更新');$('#demo-change-password').onclick=()=>{$$('#demo-account input[type="password"]').forEach(input=>input.value='');addDemoAudit('account.password_changed','用户自行修改密码（未保存明文）');toast('已模拟轮换登录态与 CSRF；未保存密码明文')};
-$('#role-button').onclick=()=>{const ordinary=!$('#admin-button').hidden;$('#admin-button').hidden=ordinary;$('#role-button').textContent=ordinary?'普通用户':'管理员';$('#demo-account-role').textContent=ordinary?'普通用户':'管理员';$('#demo-account-username').textContent=ordinary?'demo.user':'admin.preview';if(ordinary)$('#demo-admin').hidden=true;toast('仅切换虚构 Demo 身份')};
-$('#admin-button').onclick=()=>{$('#demo-admin').hidden=false;setDemoAdminView('overview')};$('#close-admin').onclick=()=>$('#demo-admin').hidden=true;$$('[data-admin-view]').forEach(button=>button.onclick=()=>setDemoAdminView(button.dataset.adminView));$('#demo-admin-menu').onclick=()=>{const open=!$('#demo-admin').classList.contains('nav-open');$('#demo-admin').classList.toggle('nav-open',open);$('#demo-admin-menu').setAttribute('aria-expanded',String(open))};
+$('#account-button').onclick=()=>setDemoView('account');$('#demo-save-profile').onclick=()=>toast('虚构显示名称已在本地预览中更新');$('#demo-change-password').onclick=()=>{$$('#demo-account input[type="password"]').forEach(input=>input.value='');addDemoAudit('account.password_changed','用户自行修改密码（未保存明文）');toast('已模拟轮换登录态与 CSRF；未保存密码明文')};
+$('#role-button').onclick=()=>{const ordinary=!$('#admin-button').hidden;$('#admin-button').hidden=ordinary;$('#role-button').textContent=ordinary?'普通用户':'管理员';$('#demo-account-role').textContent=ordinary?'普通用户':'管理员';$('#demo-account-username').textContent=ordinary?'demo.user':'admin.preview';if(ordinary){$('#demo-admin').hidden=true;syncCanvasNav()}toast('仅切换虚构 Demo 身份')};
+$('#admin-button').onclick=()=>{setDemoAdminView('overview');setDemoView('admin')};$$('[data-admin-view]').forEach(button=>button.onclick=()=>setDemoAdminView(button.dataset.adminView));$('#demo-admin-menu').onclick=()=>{const open=!$('#demo-admin').classList.contains('nav-open');$('#demo-admin').classList.toggle('nav-open',open);$('#demo-admin-menu').setAttribute('aria-expanded',String(open))};
+syncCanvasNav();
 $('#demo-add-user').onclick=()=>{$('#demo-user-rows').insertAdjacentHTML('beforeend','<tr><td>new.preview</td><td>新建示例</td><td>设计研发部</td><td>普通用户</td><td>待修改初始密码</td><td><button data-demo-user-action="edit">编辑</button><button data-demo-user-action="reset">重置密码</button><button data-demo-user-action="toggle">停用</button></td></tr>');addDemoAudit('user.created','新建虚构账号 new.preview');toast('已新增虚构账号；初始密码未保存')};
 $('#demo-user-rows').onclick=e=>{const action=e.target.dataset.demoUserAction,row=e.target.closest('tr');if(action==='edit'){row.children[1].textContent='已编辑示例';addDemoAudit('user.profile_updated','编辑虚构账号资料');toast('虚构资料已更新')}else if(action==='reset'){addDemoAudit('user.password_reset','管理员重置密码（未记录密码）');toast('已模拟重置；未保存密码明文')}else if(action==='toggle')demoConfirm('确认停用虚构账号？','项目、画布、历史和图片仍会保留。',()=>{row.children[4].textContent='停用';e.target.textContent='启用';addDemoAudit('user.disabled','停用虚构账号并撤销旧会话');toast('虚构账号已停用')})};
 const clearDemoCredentialInputs=inputs=>inputs.forEach(input=>{input.value=''});const updateDemoCredentialStatus=(provider,configured)=>{const status=$(`#demo-${provider}-status`);status.textContent=configured?'已配置':'已清除';const inputs=provider==='libtv'?[$('#demo-libtv-token')]:[$('#demo-lovart-access-key'),$('#demo-lovart-secret-key')];inputs.forEach(input=>input.placeholder=configured?'已配置；留空保持不变':`输入 ${input.id.includes('access')?'Access Key':input.id.includes('secret')?'Secret Key':'LibTV Token'}`)};$('#demo-save-libtv-credentials').onclick=()=>{const input=$('#demo-libtv-token'),clear=$('#demo-clear-libtv');if(clear.checked){demoConfirm('确认清除 LibTV 凭据？','清除后仅模拟回退到环境配置或 CLI 登录。',()=>{clearDemoCredentialInputs([input]);clear.checked=false;updateDemoCredentialStatus('libtv',false);addDemoAudit('provider.libtv_credentials_cleared','LibTV 凭据已清除');toast('已模拟清除；未保存任何明文')});return}if(input.value.trim()){updateDemoCredentialStatus('libtv',true);addDemoAudit('provider.libtv_credentials_saved','LibTV 凭据已更新')}else addDemoAudit('provider.libtv_credentials_saved','LibTV 凭据保持');clearDemoCredentialInputs([input]);toast('仅模拟安全状态；未保存任何明文')};$('#demo-save-lovart-credentials').onclick=()=>{const inputs=[$('#demo-lovart-access-key'),$('#demo-lovart-secret-key')],clear=$('#demo-clear-lovart');if(clear.checked){demoConfirm('确认清除 Lovart 凭据？','清除后仅模拟回退到环境配置。',()=>{clearDemoCredentialInputs(inputs);clear.checked=false;updateDemoCredentialStatus('lovart',false);addDemoAudit('provider.lovart_credentials_cleared','Lovart 凭据已清除');toast('已模拟清除；未保存任何明文')});return}const filled=inputs.map(input=>Boolean(input.value.trim()));if(filled[0]!==filled[1]){toast('Access Key 与 Secret Key 必须成对填写',true);return}if(filled[0]){updateDemoCredentialStatus('lovart',true);addDemoAudit('provider.lovart_credentials_saved','Lovart 凭据已更新')}else addDemoAudit('provider.lovart_credentials_saved','Lovart 凭据保持');clearDemoCredentialInputs(inputs);toast('仅模拟安全状态；未保存任何明文')};const demoModelRow=`<fieldset class="demo-model-row"><legend>新增虚构模型</legend><button type="button" class="remove-model-row" aria-label="删除模型行">移除</button><input value="Preview Image" aria-label="显示名称"><input placeholder="保存时填写执行模型 ID" aria-label="执行模型 ID"><label><input type="checkbox" checked>1:1</label><select aria-label="分辨率"><option>1K</option><option selected>2K</option><option>4K</option></select></fieldset>`;$('#demo-add-model').onclick=()=>{$('#demo-model-rows').insertAdjacentHTML('beforeend',demoModelRow);$('#demo-model-rows .demo-model-row:last-child input')?.focus()};$('#demo-model-rows').onclick=e=>{const remove=e.target.closest('.remove-model-row');if(!remove)return;remove.closest('.demo-model-row').remove();addDemoAudit('provider.model_row_removed','移除一行虚构模型');if(!$('#demo-model-rows .demo-model-row')){$('#demo-model-rows').insertAdjacentHTML('beforeend',demoModelRow);addDemoAudit('provider.model_row_required','保留至少一行虚构模型')}toast('已移除该虚构模型行；未调用真实 Provider')};$('#demo-save-provider').onclick=()=>{addDemoAudit('provider.api_saved','保存虚构 API 配置；不含凭据与地址');toast('仅本地模拟保存，未连接真实 Provider')};$('#demo-recover').onclick=()=>{addDemoAudit('task.recovery_queried','查询虚构任务恢复状态');toast('仅模拟查询，未调用真实 Provider')};$('#demo-fail').onclick=()=>demoConfirm('确认收敛为失败？','不会重试或调用真实 Provider。',()=>{addDemoAudit('task.resolved_failed','将虚构任务收敛为失败');toast('虚构任务已收敛为失败')});

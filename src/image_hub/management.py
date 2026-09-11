@@ -30,6 +30,7 @@ from image_hub.providers import (
     save_libtv_credentials,
     save_lovart_credentials,
 )
+from image_hub.web import canvas_home_url
 
 router = APIRouter()
 templates = Jinja2Templates(directory=settings.template_dir)
@@ -90,12 +91,15 @@ def _safe_error(generation: Generation) -> str:
     return text[:180]
 
 
-def _admin_context(request: Request, user: User, active: str, **extra) -> dict:
+def _admin_context(
+    request: Request, session: Session, user: User, active: str, **extra
+) -> dict:
     return {
         "user": user,
         "active_admin_page": active,
         "csrf_token": csrf_token(request),
         "flash": _pop_flash(request),
+        "canvas_url": canvas_home_url(request, session, user),
         **extra,
     }
 
@@ -180,6 +184,7 @@ def account_page(request: Request, session: Session = Depends(get_session)):
             "user": user,
             "csrf_token": csrf_token(request),
             "flash": _pop_flash(request),
+            "canvas_url": canvas_home_url(request, session, user),
         },
     )
 
@@ -281,6 +286,7 @@ def admin_overview(request: Request, session: Session = Depends(get_session)):
         "admin_overview.html",
         _admin_context(
             request,
+            session,
             user,
             "overview",
             enabled_users=enabled_users,
@@ -354,6 +360,7 @@ def admin_users(
         "admin_users.html",
         _admin_context(
             request,
+            session,
             user,
             "users",
             users=users,
@@ -538,6 +545,7 @@ def admin_providers(request: Request, session: Session = Depends(get_session)):
         "admin_providers.html",
         _admin_context(
             request,
+            session,
             user,
             "providers",
             provider_cards=provider_cards,
@@ -716,6 +724,7 @@ def admin_tasks(
         "admin_tasks.html",
         _admin_context(
             request,
+            session,
             user,
             "tasks",
             tasks=tasks,
@@ -848,6 +857,7 @@ def admin_audit(
         "admin_audit.html",
         _admin_context(
             request,
+            session,
             user,
             "audit",
             events=events,

@@ -273,8 +273,11 @@
   }
   /* The rail owns the single result-count readout; the header only reports the
      input count (plus a status while no result summary exists yet). The card's
-     only delete control lives in the header, and the collapse-to-result entry
-     appears here only while the editor is closed. */
+     only delete control lives in the header, and expanding the parameters is
+     owned by a single click on the result (plus the header chevron for the
+     keyboard path), so the rail keeps just the readout and the two file
+     actions: the readout takes the free space and the actions sit flush right,
+     which keeps the footer balanced without an empty slot. */
   function generationRailMarkup(node) {
     const batch = displayBatch(node);
     if (!batch) return '';
@@ -283,8 +286,7 @@
     const ready = Boolean(primary && primary.status === 'succeeded' && primary.artifactUrl);
     const succeeded = results.filter(result => result.status === 'succeeded').length;
     const meta = `${succeeded}/${results.length} 张结果${node.error ? ' · 有失败' : ''}`;
-    const editAction = node.expanded ? '' : '<button class="edit-action" type="button" data-edit-generation aria-expanded="false" aria-label="编辑并重新生成" title="编辑并重新生成">编辑并重新生成</button>';
-    return `<footer class="generation-rail"><span class="rail-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span><div class="node-action-rail"><div class="file-actions"><button type="button" data-open-result ${ready ? '' : 'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button type="button" data-download-result ${ready ? '' : 'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div>${editAction}</div></footer>`;
+    return `<footer class="generation-rail"><span class="rail-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span><div class="node-action-rail"><div class="file-actions"><button type="button" data-open-result ${ready ? '' : 'disabled'} aria-label="打开主图" title="打开主图">${icons.open}</button><button type="button" data-download-result ${ready ? '' : 'disabled'} aria-label="下载主图" title="下载主图">${icons.download}</button></div></div></footer>`;
   }
   function generationMarkup(node) {
     const inputs = (node.orderedInputIds || []).length;
@@ -334,14 +336,6 @@
   /* The header chevron is the only control that returns a card to the collapsed
      result summary, so it also owns the expand pin. */
   function toggleGeneration(node) { if (!core.isGenerationNode(node)) return; node.expanded = !node.expanded; node.expandedPinned = node.expanded; render(); scheduleLayoutRecompute(); scheduleSave(); }
-  function setGenerationExpanded(node, expanded, pinned) {
-    if (!core.isGenerationNode(node)) return;
-    const next = Boolean(expanded);
-    const pin = next ? Boolean(pinned) : false;
-    const changed = node.expanded !== next || node.expandedPinned !== pin;
-    node.expanded = next; node.expandedPinned = pin;
-    if (changed) { render(); scheduleLayoutRecompute(); scheduleSave(); }
-  }
 
   function nodeWorldRects() { return state.nodes.map(node => { const el = $(`[data-node-id="${node.id}"]`); const rect = el?.getBoundingClientRect(); return {x: node.x, y: node.y, width: node.width, height: rect ? rect.height / state.viewport.zoom : 240, type: node.type}; }); }
   function updateMinimap() {
@@ -803,7 +797,6 @@
         return;
       }      const batch = displayBatch(node);
       if (event.target.closest('[data-toggle-generation]')) toggleGeneration(node);
-      else if (event.target.closest('[data-edit-generation]')) setGenerationExpanded(node, true, true);
       else if (event.target.closest('[data-generate]')) generate(node);
       else if (event.target.closest('[data-open-result]')) { const primary = primaryOf(node); if (primary?.artifactUrl) openViewer({url: primary.artifactUrl, title: `${providerLabel(primary.provider)} · ${primary.modelLabel || '生成结果'}`, downloadable: true, invoker: $('[data-open-result]', nodeEl)}); }
       else if (event.target.closest('[data-download-result]')) { const primary = primaryOf(node); if (primary?.artifactUrl) downloadResult(primary.artifactUrl); }

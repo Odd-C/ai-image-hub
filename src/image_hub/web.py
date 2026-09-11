@@ -62,6 +62,32 @@ def _owned_project(session: Session, user: User, project_id: str) -> Project:
     return project
 
 
+def canvas_home_url(request: Request, session: Session, user: User) -> str:
+    """Resolve where the shared 画布 entry sends the user.
+
+    The session remembers the last project canvas that actually opened, but only
+    a project that still exists, belongs to this user and is not archived may be
+    reused. Anything else falls back to the project list, so an archived or
+    deleted project can neither raise nor point at somebody else's canvas.
+    """
+    remembered = request.session.get("last_project_id")
+    if not isinstance(remembered, str) or not remembered:
+        return "/projects"
+    owned_id = session.scalar(
+        select(Project.id).where(
+            Project.id == remembered,
+            Project.user_id == user.id,
+            Project.archived_at.is_(None),
+        )
+    )
+    return f"/projects/{owned_id}" if owned_id else "/projects"
+
+
+def _remember_last_project(request: Request, project: Project) -> None:
+    """Record the canvas the user is on, so sub-pages can return to it."""
+    request.session["last_project_id"] = project.id
+
+
 def _owned_project_generation(
     session: Session, user: User, project_id: str, generation_id: str
 ) -> Generation:
@@ -323,7 +349,12 @@ def projects_page(request: Request, session: Session = Depends(get_session)):
     return templates.TemplateResponse(
         request,
         "projects.html",
-        {"user": user, "projects": projects, "csrf_token": csrf_token(request)},
+        {
+            "user": user,
+            "projects": projects,
+            "csrf_token": csrf_token(request),
+            "canvas_url": canvas_home_url(request, session, user),
+        },
     )
 
 
@@ -359,6 +390,7 @@ def workspace(
     if not user:
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     project = _owned_project(session, user, project_id)
+    _remember_last_project(request, project)
     projects = session.scalars(
         select(Project)
         .where(Project.user_id == user.id, Project.archived_at.is_(None))
@@ -387,6 +419,7 @@ def history_page(
     if not user:
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     project = _owned_project(session, user, project_id)
+    _remember_last_project(request, project)
     projects = session.scalars(
         select(Project)
         .where(Project.user_id == user.id, Project.archived_at.is_(None))
@@ -400,6 +433,7 @@ def history_page(
             "project": project,
             "projects": projects,
             "profiles": [profile.public_dict() for profile in model_profiles()],
+            "canvas_url": canvas_home_url(request, session, user),
         },
     )
 
