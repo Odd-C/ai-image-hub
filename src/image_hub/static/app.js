@@ -59,6 +59,16 @@
     close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>'
   });
   function downloadUrl(url) { if (!url) return ''; return `${url}${url.includes('?') ? '&' : '?'}download=true`; }
+  function downloadFileName(disposition, url) {
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(String(disposition || ''));
+    if (match) {
+      let name = match[1].trim();
+      try { name = decodeURIComponent(name); } catch { /* keep the raw header value */ }
+      if (name.toLowerCase().endsWith('.png')) return name;
+    }
+    const tail = String(url || '').split('?')[0].split('/').filter(Boolean).pop() || 'ai-image-hub';
+    return `${tail.replace(/\.[a-z0-9]+$/i, '') || 'ai-image-hub'}.png`;
+  }
   function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; window.setTimeout(() => { el.className = 'toast'; }, 2400); }
   async function responseJson(response) { const payload = await response.json().catch(() => ({})); if (response.status === 401) location.href = '/login'; if (!response.ok) throw new Error(payload.detail || '操作失败'); return payload; }
   function profileById(id) { return core.profileById(models, id); }
@@ -524,6 +534,27 @@
     node.dirty = core.isDirty(node);
     return true;
   }
+  /* A card that produced several images is split into sibling cards once the
+     batch settles, so every image can be opened, regenerated and downloaded on
+     its own. The submitting card keeps result #1 and stays where it is. */
+  function visibleWorldRect() {
+    const viewport = $('#canvas-viewport');
+    return viewport ? core.visibleWorld(viewport.getBoundingClientRect(), state.viewport) : null;
+  }
+  function cardRowHeight(node) {
+    const element = $(`[data-node-id="${node.id}"]`);
+    const height = element ? element.getBoundingClientRect().height / state.viewport.zoom : 0;
+    return height > 120 ? Math.min(1200, Math.round(height)) : undefined;
+  }
+  function splitOptions() { return {uid, visible: visibleWorldRect(), rowHeight: cardRowHeight}; }
+  function splitSettledResults() {
+    const outcome = core.splitGenerationNodes(state.nodes, splitOptions());
+    if (!outcome.changed) return false;
+    state.nodes = outcome.nodes;
+    render(); scheduleLayoutRecompute(); scheduleSave();
+    toast(`多图已拆分为 ${outcome.created.length + outcome.splits} 张独立卡片，每张可单独下载 PNG`);
+    return true;
+  }
   async function generate(node) {
     if (!core.isGenerationNode(node) || node.submitting) return;
     if (node.attempt && !node.attempt.settled) { toast('该节点正在生成，请等待当前任务结束', true); return; }
@@ -547,6 +578,7 @@
     }));
     node.submitting = false;
     settleAttempt(node);
+    splitSettledResults();
     render(); scheduleSave(); startPolling();
   }
   function updateResults(items) {
@@ -562,6 +594,7 @@
       });
       if (settleAttempt(node)) changed = true;
     });
+    if (splitSettledResults()) changed = true;
     if (changed) { render(); scheduleSave(); }
     return generationNodes().some(node => [...core.batchResults(node.activeBatch), ...core.batchResults(node.attempt)].some(result => ['queued', 'running'].includes(result.status)));
   }
@@ -585,7 +618,7 @@
     state.viewport = {x: Number(payload.viewport?.x) || 0, y: Number(payload.viewport?.y) || 0, zoom: Number(payload.viewport?.zoom) || 1};
     const known = [core.IMAGE, core.GENERATION, core.LEGACY_REQUEST, core.LEGACY_RESULT];
     const loaded = (Array.isArray(payload.nodes) ? payload.nodes : []).filter(node => node && known.includes(node.type));
-    const migrated = core.migrateCanvasNodes(loaded);
+    const migrated = core.migrateCanvasNodes(loaded, splitOptions());
     state.nodes = core.restoreCanvasNodes(migrated.nodes);
     if (!state.nodes.length && payload.draft) { const draft = payload.draft; state.nodes.push(defaultGeneration(220, 160, {profileId: draft.profile, ratio: draft.ratio, resolution: draft.resolution, prompt: draft.prompt})); }
     return migrated.migrated;
@@ -638,7 +671,7 @@
     Object.assign(viewerState, {scale: 1, panX: 0, panY: 0, fit: true, pointerId: null});
     image.alt = title || '结果完整预览'; $('#viewer-title').textContent = title || '查看大图';
     $('[data-view-original]', dialog).href = url;
-    const download = $('[data-view-download]', dialog); download.hidden = !downloadable; download.href = downloadable ? downloadUrl(url) : '';
+    const download = $('[data-view-download]', dialog); download.hidden = !downloadable; download.href = downloadable ? downloadUrl(url) : ''; download.dataset.resultUrl = downloadable ? url : '';
     image.onload = fitViewer; image.src = url; dialog.showModal();
     if (image.complete && image.naturalWidth) requestAnimationFrame(fitViewer);
     requestAnimationFrame(() => $('[data-view-zoom-in]', dialog).focus());
@@ -672,7 +705,28 @@
     return [...common, {label: '打开大图', action: 'open', disabled: !node.src}, {label: '从此图创建生图', action: 'derive'}];
   }
   function openContextMenu(event, node) { event.preventDefault(); closeShortcut(); activePickerId = ''; const menu = $('#context-menu'); const point = worldPoint(event.clientX, event.clientY); context = {nodeId: node?.id || '', point, focusId: node?.id || ''}; menu.innerHTML = contextItems(node).map(item => `<button type="button" role="menuitem" data-context-action="${item.action}" ${item.disabled ? 'disabled' : ''}>${item.label}</button>`).join(''); menu.hidden = false; const margin = 8; const rect = menu.getBoundingClientRect(); menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`; menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`; menu.focus(); $('button:not(:disabled)', menu)?.focus(); }
-  function downloadResult(url) { if (!url) return; const anchor = document.createElement('a'); anchor.href = downloadUrl(url); anchor.download = ''; anchor.click(); }
+  /* Every download entry (result rail, viewer) funnels through the single
+     `?download=true` URL, which the server answers with a transcoded PNG. The
+     blob route is used instead of a bare anchor so a readable message replaces
+     a raw JSON error page when the server refuses the conversion. */
+  async function downloadResult(url) {
+    if (!url) return;
+    try {
+      const response = await fetch(downloadUrl(url), {credentials: 'same-origin'});
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || '下载失败，请稍后重试');
+      }
+      const blob = await response.blob();
+      if (blob.type && !blob.type.includes('png')) throw new Error('服务端未返回 PNG，请稍后重试');
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = downloadFileName(response.headers.get('Content-Disposition'), url);
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    } catch (error) { toast(error.message || '下载失败，请稍后重试', true); }
+  }
   function runContextAction(action) {
     const node = nodeById(context?.nodeId); const point = context?.point;
     if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); }
@@ -872,6 +926,9 @@
     $$('[data-close-rename]').forEach(button => button.addEventListener('click', closeRenameProjectDialog)); $$('[data-close-viewer]').forEach(button => button.addEventListener('click', closeViewer)); $('[data-close-overlay]').addEventListener('click', closeShortcut);
     const viewerDialog = $('#image-viewer'); const viewerStage = $('.viewer-stage', viewerDialog);
     $('[data-view-zoom-out]', viewerDialog).addEventListener('click', () => zoomViewer(viewerState.scale / 1.2)); $('[data-view-zoom-in]', viewerDialog).addEventListener('click', () => zoomViewer(viewerState.scale * 1.2)); $('[data-view-fit]', viewerDialog).addEventListener('click', fitViewer); $('[data-view-actual]', viewerDialog).addEventListener('click', actualViewer);
+    /* The viewer's download shares the result rail's PNG path instead of
+       navigating to the raw artifact, so a refused conversion stays readable. */
+    $('[data-view-download]', viewerDialog).addEventListener('click', event => { event.preventDefault(); downloadResult($('[data-view-download]', viewerDialog).dataset.resultUrl || ''); });
     viewerStage.addEventListener('wheel', event => { event.preventDefault(); event.stopPropagation(); zoomViewer(viewerState.scale * (event.deltaY < 0 ? 1.12 : .89), event.clientX, event.clientY); }, {passive: false});
     viewerStage.addEventListener('pointerdown', event => { if (event.button !== 0 || !viewerStage.classList.contains('can-pan')) return; event.preventDefault(); event.stopPropagation(); Object.assign(viewerState, {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: viewerState.panX, originY: viewerState.panY}); viewerStage.classList.add('is-panning'); viewerStage.setPointerCapture?.(event.pointerId); });
     viewerStage.addEventListener('pointermove', event => { if (viewerState.pointerId !== event.pointerId) return; viewerState.panX = viewerState.originX + event.clientX - viewerState.startX; viewerState.panY = viewerState.originY + event.clientY - viewerState.startY; applyViewerTransform(); });

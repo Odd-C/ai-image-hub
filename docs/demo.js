@@ -7,7 +7,7 @@ const profiles=[
 {id:'lovart:nano',provider:'Lovart',label:'Nano Banana Pro',enabled:true,ratios:['1:1','3:4'],resolutions:['2K']},
 {id:'api:seedream-demo',provider:'API',label:'Seedream Studio（虚构）',enabled:true,ratios:['1:1','4:3','3:4','16:9','9:16'],resolutions:['1K','2K']}
 ];
-const SCHEMA_VERSION=5,STORE_KEY='image-hub-demo-v5',LEGACY_STORE_KEYS=['image-hub-demo-v4'];
+const SCHEMA_VERSION=6,STORE_KEY='image-hub-demo-v6',LEGACY_STORE_KEYS=['image-hub-demo-v5','image-hub-demo-v4'];
 let sequence=0,state,store;
 let drag=null,pan=null,connecting=null,miniDrag=null,miniGeo=null,context=null,activePicker='',pointerSelectionId='',lastCanvasPointer=null,resultClickTimer=null;
 const acceptedImageTypes=new Set(['image/png','image/jpeg','image/webp']),maxLocalImageBytes=30*1024*1024,imageOffset=32,urlOnlyMessage='暂不支持仅粘贴图片链接，请复制图片本身或下载后拖入',localFiles=new Map(),objectUrls=new Map();
@@ -76,6 +76,62 @@ function migrateNodes(nodes){
 }
 function restoreNodes(nodes){return (Array.isArray(nodes)?nodes:[]).map(n=>{if(!n||typeof n!=='object')return n;if(isImage(n)){const copy={...n};if(copy.localOnly){copy.src='';copy.needsReselect=true}return copy}return isGeneration(n)?normalizeNode(n):{...n}})}
 
+/* ---- one card per result (mirrors the workspace contract) ---------------
+   A card that produced several images is split into sibling cards once the
+   batch settles, so every image can be opened and downloaded on its own. Only
+   presentation state moves: each result stays one immutable Generation. */
+const SPLIT_GAP=120,SPLIT_ROW_HEIGHT=420,SPLIT_MAX_COLUMNS=3;
+function splitCandidate(node){
+  if(!isGeneration(node))return null;
+  if(node.attempt&&!node.attempt.settled)return null;
+  const batches=batchResults(node.activeBatch).length?[node.activeBatch]:[node.attempt];
+  for(const batch of batches){
+    const results=batchResults(batch);
+    if(results.length<=1)continue;
+    if(results.some(r=>['queued','running'].includes(r.status)))continue;
+    if(!results.some(r=>r.status==='succeeded'))continue;
+    return batch;
+  }
+  return null;
+}
+/* Right of the origin card first, wrapping into tidy rows; inside the current
+   viewport the sequence continues on the row below rather than covering the
+   origin card. Positions are computed once and then persisted. */
+function splitGrid(origin,count){
+  const width=origin.w,gap=SPLIT_GAP,originX=origin.x,originY=origin.y;
+  let columns=SPLIT_MAX_COLUMNS,startX=originX+width+gap,startY=originY;
+  const vp=state&&$('#viewport');
+  if(vp){
+    const rect=vp.getBoundingClientRect(),right=-state.view.x/state.view.z+rect.width/state.view.z;
+    const room=Math.floor((right-startX+gap)/(width+gap));
+    columns=Math.max(1,Math.min(columns,room||1));
+    if(room<1){startX=Math.min(originX,Math.max(-state.view.x/state.view.z,right-width));startY=originY+SPLIT_ROW_HEIGHT+gap}
+  }
+  return Array.from({length:count},(_,i)=>({x:startX+(i%columns)*(width+gap),y:startY+Math.floor(i/columns)*(SPLIT_ROW_HEIGHT+gap)}));
+}
+function splitRecipe(node){return normalizeRequest({prompt:node.prompt,profileId:node.profileId,provider:node.provider,ratio:node.ratio,resolution:node.resolution,count:1,inputs:node.inputs})}
+function splitNodes(nodes){
+  const list=Array.isArray(nodes)?nodes:[],remap=new Map(),created=[];let splits=0;
+  list.forEach(node=>{
+    const batch=splitCandidate(node);if(!batch)return;
+    const results=batchResults(batch),first=results[0],rest=results.slice(1),recipe=splitRecipe(node);
+    node.activeBatch={...batch,request:recipe,results:[first]};
+    if(batch===node.attempt)node.attempt=null;
+    node.count=1;node.primaryResultId=first.id;node.dirty=isDirty(node);
+    const positions=splitGrid(node,rest.length);
+    rest.forEach((result,index)=>{
+      const id=uid('generation');remap.set(`${node.id}:${result.id}`,id);
+      created.push(normalizeNode({id,type:'generation_node',x:positions[index].x,y:positions[index].y,w:node.w,expanded:false,expandedPinned:false,error:'',prompt:recipe.prompt,provider:recipe.provider,profileId:recipe.profileId,ratio:recipe.ratio,resolution:recipe.resolution,count:1,inputs:recipe.inputs,activeBatch:{id:`${batch.id||id}-split-${index+2}`,request:recipe,results:[result]},primaryResultId:result.id}));
+    });
+    splits++;
+  });
+  if(!splits)return{nodes:list,created:[],changed:false,splits:0};
+  const all=[...list,...created];
+  if(remap.size)all.forEach(node=>{if(!isGeneration(node)||!node.inputs.length)return;node.inputs=node.inputs.map(ref=>{const parsed=parseRef(ref),target=parsed?remap.get(`${parsed.nodeId}:${parsed.resultId}`):'';return target?refFor(target,parsed.resultId):ref})});
+  return{nodes:all,created,changed:true,splits};
+}
+function splitSettled(){const outcome=splitNodes(state.nodes);if(!outcome.changed)return false;state.nodes=outcome.nodes;render();save();toast(`多图已拆分为 ${outcome.created.length+outcome.splits} 张独立卡片，每张可单独下载 PNG`);return true}
+
 /* ---- initial project ---------------------------------------------------- */
 function seeds(){
   const request=normalizeRequest({prompt:'保留产品比例，使用自然侧光与克制的浅灰背景',profileId:'api:seedream-demo',provider:'API',ratio:'4:3',resolution:'2K',count:1,inputs:['landscape']});
@@ -92,12 +148,16 @@ function readStore(){
 const loaded=readStore();
 store=loaded.store||{current:'spring',projects:[seeds()]};
 if(!Array.isArray(store.projects)||!store.projects.length)store={current:'spring',projects:[seeds()]};
-store.projects.forEach(project=>{project.version=SCHEMA_VERSION;project.nodes=restoreNodes(project.nodes)});
+/* Loading is the idempotent migration point: a canvas saved before the split
+   existed still holds multi-image cards, so it is split once here and the
+   result is written back under the current schema version. */
+let needsSave=loaded.migrated;
+store.projects.forEach(project=>{project.version=SCHEMA_VERSION;project.nodes=restoreNodes(project.nodes);const split=splitNodes(project.nodes);project.nodes=split.nodes;if(split.changed)needsSave=true});
 state=store.projects.find(p=>p.id===store.current)||store.projects[0];
 store.current=state.id;
 const node=id=>state.nodes.find(n=>n.id===id);
 const save=()=>{store.current=state.id;localStorage.setItem(STORE_KEY,JSON.stringify(store,function(key,value){return key==='src'&&this.localOnly?'':value}));$('.saved').innerHTML='<i></i>本地已保存'};
-if(loaded.migrated)save();
+if(needsSave)save();
 const point=(x,y)=>{const r=$('#viewport').getBoundingClientRect();return{x:(x-r.left-state.view.x)/state.view.z,y:(y-r.top-state.view.y)/state.view.z}};
 
 /* ---- node creation and editing ----------------------------------------- */
@@ -216,6 +276,7 @@ function settleAttempt(n){
        the header toggle closes it. */
     if(!ok){n.expanded=true;n.expandedPinned=true}
     else if(!n.expandedPinned)n.expanded=false;
+    splitSettled();
     return true;
   }
   n.error=results.map(r=>r.error).find(Boolean)||'生成失败，可安全重试';n.dirty=isDirty(n);return true;
@@ -243,8 +304,38 @@ function generate(n){
 function retry(n){const attempt=n.attempt;if(!attempt)return;attempt.settled=false;attempt.results.forEach(r=>{r.status='queued';r.error=''});n.error='';render();save();let index=0;const step=()=>{if(index>=attempt.results.length){settleAttempt(n);render();save();return}const result=attempt.results[index];result.status='running';render();setTimeout(()=>{result.status='succeeded';result.artifactUrl=index%2?'./demo-portrait.svg':'./demo-result.svg';index++;render();step()},380)};setTimeout(step,200)}
 function setSentiment(n,value,button){const primary=primaryOf(n);if(!primary)return;primary.sentiment=value;render();save();toast(`已标记为${sentimentNames[value]}`);void button}
 
+/* ---- PNG download without a backend -------------------------------------
+   The demo images are same-origin SVG placeholders, so drawing them onto a
+   canvas and re-encoding keeps the download a real PNG. A tainted canvas (for
+   example when the file is opened straight from disk) or a failed decode is
+   reported instead of silently doing nothing. */
+function pngName(url){const base=String(url||'').split('?')[0].split('/').filter(Boolean).pop()||'';return `${base.replace(/\.[a-z0-9]+$/i,'')||'ai-image-hub'}.png`}
+function downloadPng(url){
+  if(!url)return;
+  const image=new Image();
+  image.onload=()=>{
+    try{
+      const width=image.naturalWidth||1600,height=image.naturalHeight||1200;
+      const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+      const context=canvas.getContext('2d');
+      if(!context)throw new Error('当前浏览器不支持 PNG 转换，请右键另存图片');
+      context.drawImage(image,0,0,width,height);
+      canvas.toBlob(blob=>{
+        if(!blob){toast('PNG 转换失败，请右键另存图片',true);return}
+        const objectUrl=URL.createObjectURL(blob),anchor=document.createElement('a');
+        anchor.href=objectUrl;anchor.download=pngName(url);
+        document.body.appendChild(anchor);anchor.click();anchor.remove();
+        setTimeout(()=>URL.revokeObjectURL(objectUrl),10000);
+        toast(`已下载 ${anchor.download}（本地转换，无后端）`);
+      },'image/png');
+    }catch(error){toast(error.message||'PNG 转换失败，请右键另存图片',true)}
+  };
+  image.onerror=()=>toast('无法读取该图片，PNG 下载失败',true);
+  image.src=url;
+}
+
 /* ---- large image viewer (shared with the workspace behaviour) ------------ */
-function viewerBounds(){return $('.viewer-stage').getBoundingClientRect()}function clampView(){const i=$('#viewer img'),b=viewerBounds(),mx=Math.max(0,(i.naturalWidth*viewImage.scale-b.width)/2),my=Math.max(0,(i.naturalHeight*viewImage.scale-b.height)/2);viewImage.x=Math.max(-mx,Math.min(mx,viewImage.x));viewImage.y=Math.max(-my,Math.min(my,viewImage.y))}function applyView(){const i=$('#viewer img');if(!i.naturalWidth)return;clampView();i.style.width=`${i.naturalWidth}px`;i.style.height=`${i.naturalHeight}px`;i.style.transform=`translate(-50%,-50%) translate(${viewImage.x}px,${viewImage.y}px) scale(${viewImage.scale})`;$('#viewer-zoom').textContent=`${Math.round(viewImage.scale*100)}%`;$('.viewer-stage').classList.toggle('can-pan',i.naturalWidth*viewImage.scale>viewerBounds().width+1||i.naturalHeight*viewImage.scale>viewerBounds().height+1)}function fitViewer(){const i=$('#viewer img'),b=viewerBounds();if(!i.naturalWidth)return;viewImage.scale=Math.max(.1,Math.min(8,b.width/i.naturalWidth,b.height/i.naturalHeight));viewImage.x=viewImage.y=0;viewImage.fit=true;applyView()}function actualViewer(){viewImage.scale=1;viewImage.x=viewImage.y=0;viewImage.fit=false;applyView()}function zoomViewer(next,cx,cy){const b=viewerBounds(),old=viewImage.scale,z=Math.max(.1,Math.min(8,next)),x=(cx??b.left+b.width/2)-b.left-b.width/2,y=(cy??b.top+b.height/2)-b.top-b.height/2;viewImage.x=x-(x-viewImage.x)*z/old;viewImage.y=y-(y-viewImage.y)*z/old;viewImage.scale=z;viewImage.fit=false;applyView()}function viewer(n){if(!n?.src)return;viewImage.invoker=document.activeElement?.closest?.('[data-open],.image')||document.activeElement;Object.assign(viewImage,{scale:1,x:0,y:0,fit:true,pointer:null});$('#viewer-title').textContent=n.title||'生成结果大图';const i=$('#viewer img');i.onload=fitViewer;i.src=n.src;$('#viewer-original').href=n.src;$('#viewer-download').href=n.src;$('#viewer').showModal();if(i.complete&&i.naturalWidth)requestAnimationFrame(fitViewer);requestAnimationFrame(()=>$('#viewer-zoom-in').focus())}function closeViewer(){const d=$('#viewer');if(!d.open)return;d.close();const i=$('#viewer img');i.onload=null;i.removeAttribute('src');i.removeAttribute('style');$('.viewer-stage').classList.remove('can-pan','is-panning');const target=viewImage.invoker;Object.assign(viewImage,{scale:1,x:0,y:0,fit:true,pointer:null,invoker:null});requestAnimationFrame(()=>target?.isConnected&&target.focus?.({preventScroll:true}))}
+function viewerBounds(){return $('.viewer-stage').getBoundingClientRect()}function clampView(){const i=$('#viewer img'),b=viewerBounds(),mx=Math.max(0,(i.naturalWidth*viewImage.scale-b.width)/2),my=Math.max(0,(i.naturalHeight*viewImage.scale-b.height)/2);viewImage.x=Math.max(-mx,Math.min(mx,viewImage.x));viewImage.y=Math.max(-my,Math.min(my,viewImage.y))}function applyView(){const i=$('#viewer img');if(!i.naturalWidth)return;clampView();i.style.width=`${i.naturalWidth}px`;i.style.height=`${i.naturalHeight}px`;i.style.transform=`translate(-50%,-50%) translate(${viewImage.x}px,${viewImage.y}px) scale(${viewImage.scale})`;$('#viewer-zoom').textContent=`${Math.round(viewImage.scale*100)}%`;$('.viewer-stage').classList.toggle('can-pan',i.naturalWidth*viewImage.scale>viewerBounds().width+1||i.naturalHeight*viewImage.scale>viewerBounds().height+1)}function fitViewer(){const i=$('#viewer img'),b=viewerBounds();if(!i.naturalWidth)return;viewImage.scale=Math.max(.1,Math.min(8,b.width/i.naturalWidth,b.height/i.naturalHeight));viewImage.x=viewImage.y=0;viewImage.fit=true;applyView()}function actualViewer(){viewImage.scale=1;viewImage.x=viewImage.y=0;viewImage.fit=false;applyView()}function zoomViewer(next,cx,cy){const b=viewerBounds(),old=viewImage.scale,z=Math.max(.1,Math.min(8,next)),x=(cx??b.left+b.width/2)-b.left-b.width/2,y=(cy??b.top+b.height/2)-b.top-b.height/2;viewImage.x=x-(x-viewImage.x)*z/old;viewImage.y=y-(y-viewImage.y)*z/old;viewImage.scale=z;viewImage.fit=false;applyView()}function viewer(n){if(!n?.src)return;viewImage.invoker=document.activeElement?.closest?.('[data-open],.image')||document.activeElement;Object.assign(viewImage,{scale:1,x:0,y:0,fit:true,pointer:null,src:n.src});$('#viewer-title').textContent=n.title||'生成结果大图';const i=$('#viewer img');i.onload=fitViewer;i.src=n.src;$('#viewer-original').href=n.src;$('#viewer-download').href=n.src;$('#viewer').showModal();if(i.complete&&i.naturalWidth)requestAnimationFrame(fitViewer);requestAnimationFrame(()=>$('#viewer-zoom-in').focus())}function closeViewer(){const d=$('#viewer');if(!d.open)return;d.close();const i=$('#viewer img');i.onload=null;i.removeAttribute('src');i.removeAttribute('style');$('.viewer-stage').classList.remove('can-pan','is-panning');const target=viewImage.invoker;Object.assign(viewImage,{scale:1,x:0,y:0,fit:true,pointer:null,invoker:null});requestAnimationFrame(()=>target?.isConnected&&target.focus?.({preventScroll:true}))}
 
 /* ---- projects, sidebar and drawer -------------------------------------- */
 function renderProjects(){const m=$('#project-list');m.innerHTML=store.projects.map(p=>`<div class="project-list-row ${p.id===state.id?'current':''}"><button class="project-list-item" aria-current="${p.id===state.id?'page':'false'}" data-project="${p.id}" title="${esc(p.name)}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg><span>${esc(p.name)}</span></button><button class="project-rename-button" type="button" data-rename-project="${p.id}" aria-label="重命名 ${esc(p.name)}" title="重命名项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17.5V20h2.5L17.7 8.8l-2.5-2.5L4 17.5Z"/><path d="m13.8 7.7 2.5 2.5"/></svg></button></div>`).join('');$('#project-name').textContent=state.name}
@@ -385,7 +476,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(e.target.closest('[data-toggle]'))toggleGeneration(n);
     else if(e.target.closest('[data-generate]'))generate(n);
     else if(e.target.closest('[data-open-result]')){const p=primaryOf(n);if(p?.artifactUrl)viewer({src:p.artifactUrl,title:p.model||'生成结果'})}
-    else if(e.target.closest('[data-download-result]')){const p=primaryOf(n);if(p?.artifactUrl){const a=document.createElement('a');a.href=p.artifactUrl;a.download='';a.click()}}
+    else if(e.target.closest('[data-download-result]')){const p=primaryOf(n);if(p?.artifactUrl)downloadPng(p.artifactUrl)}
     else if(e.target.closest('[data-sentiment]'))setSentiment(n,e.target.closest('[data-sentiment]').dataset.sentiment,e.target.closest('[data-sentiment]'));
     else if(e.target.closest('[data-remove]')){const ref=e.target.closest('[data-remove]').dataset.remove;n.inputs=n.inputs.filter(x=>x!==ref);syncDirty(n);render();save()}
     else if(e.target.closest('[data-model-trigger]')){activePicker=activePicker===`${n.id}:model`?'':`${n.id}:model`;render()}
@@ -514,6 +605,6 @@ syncCanvasNav();
 $('#demo-add-user').onclick=()=>{$('#demo-user-rows').insertAdjacentHTML('beforeend','<tr><td>new.preview</td><td>新建示例</td><td>设计研发部</td><td>普通用户</td><td>待修改初始密码</td><td><button data-demo-user-action="edit">编辑</button><button data-demo-user-action="reset">重置密码</button><button data-demo-user-action="toggle">停用</button></td></tr>');addDemoAudit('user.created','新建虚构账号 new.preview');toast('已新增虚构账号；初始密码未保存')};
 $('#demo-user-rows').onclick=e=>{const action=e.target.dataset.demoUserAction,row=e.target.closest('tr');if(action==='edit'){row.children[1].textContent='已编辑示例';addDemoAudit('user.profile_updated','编辑虚构账号资料');toast('虚构资料已更新')}else if(action==='reset'){addDemoAudit('user.password_reset','管理员重置密码（未记录密码）');toast('已模拟重置；未保存密码明文')}else if(action==='toggle')demoConfirm('确认停用虚构账号？','项目、画布、历史和图片仍会保留。',()=>{row.children[4].textContent='停用';e.target.textContent='启用';addDemoAudit('user.disabled','停用虚构账号并撤销旧会话');toast('虚构账号已停用')})};
 const clearDemoCredentialInputs=inputs=>inputs.forEach(input=>{input.value=''});const updateDemoCredentialStatus=(provider,configured)=>{const status=$(`#demo-${provider}-status`);status.textContent=configured?'已配置':'已清除';const inputs=provider==='libtv'?[$('#demo-libtv-token')]:[$('#demo-lovart-access-key'),$('#demo-lovart-secret-key')];inputs.forEach(input=>input.placeholder=configured?'已配置；留空保持不变':`输入 ${input.id.includes('access')?'Access Key':input.id.includes('secret')?'Secret Key':'LibTV Token'}`)};$('#demo-save-libtv-credentials').onclick=()=>{const input=$('#demo-libtv-token'),clear=$('#demo-clear-libtv');if(clear.checked){demoConfirm('确认清除 LibTV 凭据？','清除后仅模拟回退到环境配置或 CLI 登录。',()=>{clearDemoCredentialInputs([input]);clear.checked=false;updateDemoCredentialStatus('libtv',false);addDemoAudit('provider.libtv_credentials_cleared','LibTV 凭据已清除');toast('已模拟清除；未保存任何明文')});return}if(input.value.trim()){updateDemoCredentialStatus('libtv',true);addDemoAudit('provider.libtv_credentials_saved','LibTV 凭据已更新')}else addDemoAudit('provider.libtv_credentials_saved','LibTV 凭据保持');clearDemoCredentialInputs([input]);toast('仅模拟安全状态；未保存任何明文')};$('#demo-save-lovart-credentials').onclick=()=>{const inputs=[$('#demo-lovart-access-key'),$('#demo-lovart-secret-key')],clear=$('#demo-clear-lovart');if(clear.checked){demoConfirm('确认清除 Lovart 凭据？','清除后仅模拟回退到环境配置。',()=>{clearDemoCredentialInputs(inputs);clear.checked=false;updateDemoCredentialStatus('lovart',false);addDemoAudit('provider.lovart_credentials_cleared','Lovart 凭据已清除');toast('已模拟清除；未保存任何明文')});return}const filled=inputs.map(input=>Boolean(input.value.trim()));if(filled[0]!==filled[1]){toast('Access Key 与 Secret Key 必须成对填写',true);return}if(filled[0]){updateDemoCredentialStatus('lovart',true);addDemoAudit('provider.lovart_credentials_saved','Lovart 凭据已更新')}else addDemoAudit('provider.lovart_credentials_saved','Lovart 凭据保持');clearDemoCredentialInputs(inputs);toast('仅模拟安全状态；未保存任何明文')};const demoModelRow=`<fieldset class="demo-model-row"><legend>新增虚构模型</legend><button type="button" class="remove-model-row" aria-label="删除模型行">移除</button><input value="Preview Image" aria-label="显示名称"><input placeholder="保存时填写执行模型 ID" aria-label="执行模型 ID"><label><input type="checkbox" checked>1:1</label><select aria-label="分辨率"><option>1K</option><option selected>2K</option><option>4K</option></select></fieldset>`;$('#demo-add-model').onclick=()=>{$('#demo-model-rows').insertAdjacentHTML('beforeend',demoModelRow);$('#demo-model-rows .demo-model-row:last-child input')?.focus()};$('#demo-model-rows').onclick=e=>{const remove=e.target.closest('.remove-model-row');if(!remove)return;remove.closest('.demo-model-row').remove();addDemoAudit('provider.model_row_removed','移除一行虚构模型');if(!$('#demo-model-rows .demo-model-row')){$('#demo-model-rows').insertAdjacentHTML('beforeend',demoModelRow);addDemoAudit('provider.model_row_required','保留至少一行虚构模型')}toast('已移除该虚构模型行；未调用真实 Provider')};$('#demo-save-provider').onclick=()=>{addDemoAudit('provider.api_saved','保存虚构 API 配置；不含凭据与地址');toast('仅本地模拟保存，未连接真实 Provider')};$('#demo-recover').onclick=()=>{addDemoAudit('task.recovery_queried','查询虚构任务恢复状态');toast('仅模拟查询，未调用真实 Provider')};$('#demo-fail').onclick=()=>demoConfirm('确认收敛为失败？','不会重试或调用真实 Provider。',()=>{addDemoAudit('task.resolved_failed','将虚构任务收敛为失败');toast('虚构任务已收敛为失败')});
-const vs=$('.viewer-stage');$('#viewer-close').onclick=closeViewer;$('#viewer-zoom-out').onclick=()=>zoomViewer(viewImage.scale/1.2);$('#viewer-zoom-in').onclick=()=>zoomViewer(viewImage.scale*1.2);$('#viewer-fit').onclick=fitViewer;$('#viewer-actual').onclick=actualViewer;vs.onwheel=e=>{e.preventDefault();e.stopPropagation();zoomViewer(viewImage.scale*(e.deltaY<0?1.12:.89),e.clientX,e.clientY)};vs.onpointerdown=e=>{if(e.button!==0||!vs.classList.contains('can-pan'))return;e.preventDefault();e.stopPropagation();Object.assign(viewImage,{pointer:e.pointerId,sx:e.clientX,sy:e.clientY,ox:viewImage.x,oy:viewImage.y});vs.classList.add('is-panning');vs.setPointerCapture?.(e.pointerId)};vs.onpointermove=e=>{if(viewImage.pointer!==e.pointerId)return;viewImage.x=viewImage.ox+e.clientX-viewImage.sx;viewImage.y=viewImage.oy+e.clientY-viewImage.sy;applyView()};const endView=e=>{if(viewImage.pointer!==e.pointerId)return;viewImage.pointer=null;vs.classList.remove('is-panning');vs.releasePointerCapture?.(e.pointerId)};vs.onpointerup=endView;vs.onpointercancel=endView;$('#viewer').onclick=e=>{if(e.target===e.currentTarget)closeViewer()};$('[data-close]').onclick=()=>$('#shortcuts').hidden=true;$('#minimap-toggle').onclick=()=>{const s=$('#minimap-map');s.hidden=!s.hidden;$('#minimap-toggle').setAttribute('aria-expanded',String(!s.hidden));minimap()};$('#minimap-map').onpointerdown=e=>{miniDrag=e.pointerId;e.currentTarget.setPointerCapture?.(e.pointerId);miniPan(e)};$('#minimap-map').onpointermove=e=>{if(miniDrag===e.pointerId)miniPan(e)};$('#minimap-map').onpointerup=()=>{miniDrag=null;save()};window.onresize=()=>{if(!matchMedia('(max-width:768px)').matches)setDrawer(false);links();minimap();if($('#viewer').open)requestAnimationFrame(viewImage.fit?fitViewer:applyView)};
+const vs=$('.viewer-stage');$('#viewer-close').onclick=closeViewer;$('#viewer-download').onclick=e=>{e.preventDefault();downloadPng(viewImage.src||'')};$('#viewer-zoom-out').onclick=()=>zoomViewer(viewImage.scale/1.2);$('#viewer-zoom-in').onclick=()=>zoomViewer(viewImage.scale*1.2);$('#viewer-fit').onclick=fitViewer;$('#viewer-actual').onclick=actualViewer;vs.onwheel=e=>{e.preventDefault();e.stopPropagation();zoomViewer(viewImage.scale*(e.deltaY<0?1.12:.89),e.clientX,e.clientY)};vs.onpointerdown=e=>{if(e.button!==0||!vs.classList.contains('can-pan'))return;e.preventDefault();e.stopPropagation();Object.assign(viewImage,{pointer:e.pointerId,sx:e.clientX,sy:e.clientY,ox:viewImage.x,oy:viewImage.y});vs.classList.add('is-panning');vs.setPointerCapture?.(e.pointerId)};vs.onpointermove=e=>{if(viewImage.pointer!==e.pointerId)return;viewImage.x=viewImage.ox+e.clientX-viewImage.sx;viewImage.y=viewImage.oy+e.clientY-viewImage.sy;applyView()};const endView=e=>{if(viewImage.pointer!==e.pointerId)return;viewImage.pointer=null;vs.classList.remove('is-panning');vs.releasePointerCapture?.(e.pointerId)};vs.onpointerup=endView;vs.onpointercancel=endView;$('#viewer').onclick=e=>{if(e.target===e.currentTarget)closeViewer()};$('[data-close]').onclick=()=>$('#shortcuts').hidden=true;$('#minimap-toggle').onclick=()=>{const s=$('#minimap-map');s.hidden=!s.hidden;$('#minimap-toggle').setAttribute('aria-expanded',String(!s.hidden));minimap()};$('#minimap-map').onpointerdown=e=>{miniDrag=e.pointerId;e.currentTarget.setPointerCapture?.(e.pointerId);miniPan(e)};$('#minimap-map').onpointermove=e=>{if(miniDrag===e.pointerId)miniPan(e)};$('#minimap-map').onpointerup=()=>{miniDrag=null;save()};window.onresize=()=>{if(!matchMedia('(max-width:768px)').matches)setDrawer(false);links();minimap();if($('#viewer').open)requestAnimationFrame(viewImage.fit?fitViewer:applyView)};
 });
 })();

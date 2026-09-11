@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const SCHEMA_VERSION = 5;
+  const SCHEMA_VERSION = 6;
   const IMAGE = 'image';
   const GENERATION = 'generation_node';
   const LEGACY_REQUEST = 'generation_request';
@@ -13,6 +13,10 @@
   const RESULT_REF_PREFIX = 'result:';
   const DEFAULT_WIDTH = 344;
   const MAX_COUNT = 4;
+  /* Cards are siblings, never a grid: one card owns exactly one result. */
+  const SPLIT_GAP = 120;
+  const SPLIT_ROW_HEIGHT = 420;
+  const SPLIT_MAX_COLUMNS = 3;
 
   function profileById(models, id) {
     return models.find(item => item.id === id) || null;
@@ -271,6 +275,139 @@
     return null;
   }
 
+  /* ---- one card per result -------------------------------------------------
+     A unified card used to show a whole batch as an inner grid, which made a
+     single image impossible to download on its own. After a batch settles it is
+     split into sibling cards: the submitting card keeps result #1 (the user's
+     context never jumps) and every other result moves into its own card that
+     carries the same recipe. Splitting is presentation-only: each result stays
+     an independent immutable Generation, references are remapped, and no
+     evidence is created, copied or dropped. */
+
+  function splitCandidateBatch(node) {
+    if (!isGenerationNode(node)) return null;
+    /* A running attempt owns the card; splitting waits until it settles. */
+    if (node.attempt && !node.attempt.settled) return null;
+    const batches = batchResults(node.activeBatch).length ? [node.activeBatch] : [node.attempt];
+    for (const batch of batches) {
+      const results = batchResults(batch);
+      if (results.length <= 1) continue;
+      if (results.some(result => ['queued', 'running'].includes(result.status))) continue;
+      if (!results.some(result => result.status === 'succeeded')) continue;
+      return batch;
+    }
+    return null;
+  }
+
+  /* Right of the origin card first, wrapping into tidy rows afterwards. With a
+     visible world rect the grid stays inside the viewport: when the right side
+     is used up the sequence continues on the row below the origin card instead
+     of covering it. Positions are computed once and then persisted, so a
+     settled layout never drifts. */
+  function splitGrid(origin, count, options = {}) {
+    const gap = Math.max(0, Number(options.gap ?? SPLIT_GAP)) || SPLIT_GAP;
+    const width = Number(origin?.width) || DEFAULT_WIDTH;
+    const rawRow = typeof options.rowHeight === 'function' ? options.rowHeight(origin) : options.rowHeight;
+    const rowHeight = Math.max(160, Number(rawRow) || SPLIT_ROW_HEIGHT);
+    const visible = options.visible && Number.isFinite(Number(options.visible.width)) ? options.visible : null;
+    const originX = Number(origin?.x) || 0;
+    const originY = Number(origin?.y) || 0;
+    let columns = Math.max(1, Math.min(SPLIT_MAX_COLUMNS, Number(options.columns) || SPLIT_MAX_COLUMNS));
+    let startX = originX + width + gap;
+    let startY = originY;
+    if (visible) {
+      const right = Number(visible.x) + Number(visible.width);
+      const room = Math.floor((right - startX + gap) / (width + gap));
+      columns = Math.max(1, Math.min(columns, room || 1));
+      if (room < 1) {
+        startX = Math.min(originX, Math.max(Number(visible.x), right - width));
+        startY = originY + rowHeight + gap;
+      }
+    }
+    return Array.from({length: count}, (_, index) => ({
+      x: startX + (index % columns) * (width + gap),
+      y: startY + Math.floor(index / columns) * (rowHeight + gap),
+    }));
+  }
+
+  function splitRecipe(node) {
+    return normalizeRequest({
+      prompt: node?.prompt,
+      profileId: node?.profileId,
+      provider: node?.provider,
+      ratio: node?.ratio,
+      resolution: node?.resolution,
+      quality: node?.quality,
+      count: 1,
+      orderedInputIds: node?.orderedInputIds,
+    });
+  }
+
+  /* Idempotent: single-result cards pass through untouched, so a reload never
+     splits twice. Returns the node list plus how many origin cards were split. */
+  function splitGenerationNodes(nodes, options = {}) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    const remap = new Map();
+    const created = [];
+    let splits = 0;
+    list.forEach(node => {
+      const batch = splitCandidateBatch(node);
+      if (!batch) return;
+      const results = batchResults(batch);
+      const [first, ...rest] = results;
+      const recipe = splitRecipe(node);
+      const nextBatch = {...batch, request: recipe, results: [first]};
+      node.activeBatch = nextBatch;
+      if (batch === node.attempt) node.attempt = null;
+      node.count = 1;
+      node.primaryResultId = first.id;
+      node.dirty = isDirty(node);
+      const positions = splitGrid(node, rest.length, options);
+      rest.forEach((result, index) => {
+        const id = options.uid ? options.uid('generation') : `${node.id}-result-${index + 2}`;
+        remap.set(`${node.id}:${result.id}`, id);
+        created.push(normalizeGenerationNode({
+          id,
+          type: GENERATION,
+          x: positions[index].x,
+          y: positions[index].y,
+          width: node.width,
+          expanded: false,
+          expandedPinned: false,
+          contentMode: node.contentMode,
+          profileUnavailable: node.profileUnavailable,
+          error: '',
+          parentGenerationId: node.parentGenerationId,
+          ...recipe,
+          activeBatch: {
+            id: `${batch.id || id}-split-${index + 2}`,
+            createdAt: batch.createdAt,
+            parentGenerationId: batch.parentGenerationId,
+            request: recipe,
+            results: [result],
+          },
+          primaryResultId: result.id,
+        }));
+      });
+      splits += 1;
+    });
+    if (!splits) return {nodes: list, created: [], changed: false, splits: 0};
+    const all = [...list, ...created];
+    if (remap.size) {
+      /* A moved result keeps its identity, so every reference that pointed at it
+         is re-pointed at the card that now holds it. */
+      all.forEach(node => {
+        if (!isGenerationNode(node) || !(node.orderedInputIds || []).length) return;
+        node.orderedInputIds = node.orderedInputIds.map(ref => {
+          const parsed = parseResultRefId(ref);
+          const target = parsed ? remap.get(`${parsed.nodeId}:${parsed.resultId}`) : '';
+          return target ? resultRefId(target, parsed.resultId) : ref;
+        });
+      });
+    }
+    return {nodes: all, created, changed: true, splits};
+  }
+
   /* ---- legacy canvas migration ------------------------------------------- */
 
   function legacyResultToResult(result) {
@@ -306,11 +443,16 @@
   }
 
   /* Idempotent: unified nodes pass through untouched, legacy request/result
-     presentation nodes merge exactly once. */
-  function migrateCanvasNodes(nodes) {
+     presentation nodes merge exactly once, and every card that still held a
+     multi-image grid is split into one card per result. */
+  function migrateCanvasNodes(nodes, options = {}) {
     const list = (Array.isArray(nodes) ? nodes : []).filter(node => node && typeof node === 'object');
     const legacy = list.filter(node => node.type === LEGACY_REQUEST || node.type === LEGACY_RESULT);
-    if (!legacy.length) return {nodes: list.map(node => ({...node})), migrated: false};
+    if (!legacy.length) {
+      const passthrough = list.map(node => ({...node}));
+      const split = splitGenerationNodes(passthrough, options);
+      return {nodes: split.nodes, migrated: split.changed};
+    }
 
     const plan = new Map();
     list.forEach(node => { if (node.type === LEGACY_REQUEST) plan.set(node.id, {request: node, results: []}); });
@@ -389,7 +531,8 @@
       }));
     });
 
-    return {nodes: migratedNodes, migrated: true};
+    const split = splitGenerationNodes(migratedNodes, options);
+    return {nodes: split.nodes, migrated: true};
   }
 
   /* ---- history ----------------------------------------------------------- */
@@ -585,12 +728,14 @@
 
   return {
     SCHEMA_VERSION, IMAGE, GENERATION, LEGACY_REQUEST, LEGACY_RESULT, DEFAULT_WIDTH, MAX_COUNT,
+    SPLIT_GAP, SPLIT_ROW_HEIGHT, SPLIT_MAX_COLUMNS,
     profileById, chooseRequestProfile, requestAvailability, ratioToAspect, clampCount,
     resultRefId, parseResultRefId, uniqueRefs,
     isGenerationNode, isImageNode, normalizeGenerationNode, normalizeBatch, normalizeResult, normalizeRequest,
     batchResults, nodeResults, findResult, requestSnapshot, activeRequest, isDirty,
     primaryResult, primaryGenerationId, nodeStatus, batchProgress, attemptError,
     resolveInputRef, resolveInputRefs, firstMissingLocalInput,
+    splitCandidateBatch, splitGrid, splitGenerationNodes,
     migrateCanvasNodes, historyAction, historicalNode,
     restoreCanvasNodes, isPresentationNode, clonePresentationNodes, removePresentationNodes,
     rectCenterToWorld, visibleWorld, minimapGeometry, minimapPointToWorld, isEditableTarget,

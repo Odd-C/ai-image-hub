@@ -100,7 +100,7 @@ def test_history_locate_finds_the_unified_node_and_continue_copies_the_full_requ
     }
 
 
-def test_migrates_legacy_canvas_once_and_remaps_references():
+def test_migrates_legacy_canvas_once_splits_results_and_remaps_references():
     result = run_canvas_core(
         f"""
         const core = require({json.dumps(str(CORE_PATH))});
@@ -120,10 +120,12 @@ def test_migrates_legacy_canvas_once_and_remaps_references():
         const first = core.migrateCanvasNodes(legacy);
         const second = core.migrateCanvasNodes(first.nodes);
         const merged = first.nodes.find(node => node.id === 'request-1');
+        const split = first.nodes.find(node => node.id === 'request-1-result-2');
         const orphan = first.nodes.find(node => node.id === 'generation-result-3');
         console.log(JSON.stringify({{
           migrated: first.migrated,
           secondMigrated: second.migrated,
+          nodeCount: first.nodes.length,
           types: first.nodes.map(node => node.type),
           inputRefs: merged.orderedInputIds,
           resultIds: merged.activeBatch.results.map(item => item.id),
@@ -133,6 +135,19 @@ def test_migrates_legacy_canvas_once_and_remaps_references():
           expanded: merged.expanded,
           draftPrompt: merged.prompt,
           batchRequest: merged.activeBatch.request,
+          splitCount: split.count,
+          splitX: split.x,
+          splitY: split.y,
+          splitExpanded: split.expanded,
+          splitInputRefs: split.orderedInputIds,
+          splitResultIds: split.activeBatch.results.map(item => item.id),
+          splitGenerationIds: split.activeBatch.results.map(item => item.generationId),
+          splitPrimaryResultId: split.primaryResultId,
+          splitPrompt: split.prompt,
+          splitRatio: split.ratio,
+          everyCardHasOneResult: first.nodes
+            .filter(node => node.type === 'generation_node')
+            .every(node => core.batchResults(node.activeBatch).length === 1),
           orphanType: orphan.type,
           orphanGenerationId: orphan.activeBatch.results[0].generationId,
           stableSecondPass: JSON.stringify(second.nodes) === JSON.stringify(first.nodes)
@@ -143,16 +158,37 @@ def test_migrates_legacy_canvas_once_and_remaps_references():
     assert result["migrated"] is True
     assert result["secondMigrated"] is False
     assert result["stableSecondPass"] is True
-    assert result["types"] == ["image", "generation_node", "generation_node"]
-    assert result["inputRefs"] == ["upload-1", "result:request-1:result-2"]
-    assert result["resultIds"] == ["result-1", "result-2"]
-    assert result["resultGenerationIds"] == ["evidence-1", "evidence-2"]
-    assert result["sentiment"] == ["adopted", ""]
+    assert result["nodeCount"] == 4
+    assert result["types"] == [
+        "image",
+        "generation_node",
+        "generation_node",
+        "generation_node",
+    ]
+    assert result["inputRefs"] == ["upload-1", "result:request-1-result-2:result-2"]
+    assert result["resultIds"] == ["result-1"]
+    assert result["resultGenerationIds"] == ["evidence-1"]
+    assert result["sentiment"] == ["adopted"]
     assert result["primaryResultId"] == "result-1"
     assert result["expanded"] is False
     assert result["draftPrompt"] == "legacy draft"
-    assert result["batchRequest"]["count"] == 2
-    assert result["batchRequest"]["orderedInputIds"] == ["upload-1", "result:request-1:result-2"]
+    # The submitting card keeps result #1 and now reports the single-result recipe.
+    assert result["batchRequest"]["count"] == 1
+    assert result["batchRequest"]["orderedInputIds"] == [
+        "upload-1",
+        "result:request-1-result-2:result-2",
+    ]
+    # Result #2 becomes its own sibling card, right of the origin, with the recipe.
+    assert result["splitCount"] == 1
+    assert (result["splitX"], result["splitY"]) == (964, 120)
+    assert result["splitExpanded"] is False
+    assert result["splitResultIds"] == ["result-2"]
+    assert result["splitGenerationIds"] == ["evidence-2"]
+    assert result["splitPrimaryResultId"] == "result-2"
+    assert result["splitPrompt"] == "legacy draft"
+    assert result["splitRatio"] == "3:4"
+    assert result["splitInputRefs"] == ["upload-1", "result:request-1-result-2:result-2"]
+    assert result["everyCardHasOneResult"] is True
     assert result["orphanType"] == "generation_node"
     assert result["orphanGenerationId"] == "evidence-3"
 

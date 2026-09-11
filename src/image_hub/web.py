@@ -3,7 +3,7 @@ import json
 import shutil
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -25,7 +25,13 @@ from image_hub.providers import (
     get_profile,
     model_profiles,
 )
-from image_hub.storage import InvalidImage, resolve_storage_key, store_reference
+from image_hub.storage import (
+    InvalidImage,
+    png_download_name,
+    resolve_storage_key,
+    store_reference,
+    transcode_artifact_to_png,
+)
 from image_hub.worker import generation_worker
 
 router = APIRouter()
@@ -722,12 +728,31 @@ def artifact(
     download: bool = False,
     session: Session = Depends(get_session),
 ):
+    """Serve a stored artifact.
+
+    Inline previews stream the stored bytes untouched so opening a canvas never
+    pays for a decode. A download is always re-encoded to PNG, because a
+    provider may return JPEG or WebP and the download contract is "PNG".
+    """
     user = current_user(request, session)
     generation = _owned_generation(session, user, generation_id)
-    path = resolve_storage_key(generation.artifact_storage_key)
-    if not generation.artifact_storage_key or not path.is_file():
+    if not generation.artifact_storage_key:
         raise HTTPException(404, "图片不存在")
-    return FileResponse(path, filename=path.name if download else None)
+    path = resolve_storage_key(generation.artifact_storage_key)
+    if not path.is_file():
+        raise HTTPException(404, "图片不存在")
+    if not download:
+        return FileResponse(path)
+    try:
+        payload = transcode_artifact_to_png(path)
+    except InvalidImage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    filename = png_download_name(path.name, generation.id)
+    return Response(
+        content=payload,
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/generations/{generation_id}/references/{reference_id}")
