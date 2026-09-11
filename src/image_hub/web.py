@@ -12,9 +12,8 @@ from image_hub.auth import (
     check_login_rate_limit,
     csrf_token,
     current_user,
-    hash_password,
-    require_admin,
     require_csrf,
+    rotate_csrf_token,
     verify_password,
 )
 from image_hub.config import settings
@@ -25,9 +24,6 @@ from image_hub.providers import (
     freeze_profile_execution,
     get_profile,
     model_profiles,
-    public_api_config,
-    recover_generation,
-    save_api_config,
 )
 from image_hub.storage import InvalidImage, resolve_storage_key, store_reference
 from image_hub.worker import generation_worker
@@ -38,9 +34,12 @@ SENTIMENTS = {"satisfied", "adopted", "dissatisfied"}
 
 
 def _user_or_redirect(request: Request, session: Session) -> User | None:
-    user_id = request.session.get("user_id")
-    user = session.get(User, user_id) if user_id else None
-    return user if user and user.is_active else None
+    try:
+        return current_user(request, session)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
 
 
 def _owned_generation(session: Session, user: User, generation_id: str) -> Generation:
@@ -191,8 +190,15 @@ def _locked_generation_user(request: Request, session: Session) -> User:
         user = session.get(User, user_id)
     else:
         user = session.scalar(select(User).where(User.id == user_id).with_for_update())
-    if user is None or not user.is_active:
+    if (
+        user is None
+        or not user.is_active
+        or request.session.get("auth_version") != user.auth_version
+    ):
+        request.session.clear()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="请先修改初始密码")
     return user
 
 
@@ -206,8 +212,15 @@ def _locked_project_user(request: Request, session: Session) -> User:
         user = session.get(User, user_id)
     else:
         user = session.scalar(select(User).where(User.id == user_id).with_for_update())
-    if user is None or not user.is_active:
+    if (
+        user is None
+        or not user.is_active
+        or request.session.get("auth_version") != user.auth_version
+    ):
+        request.session.clear()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="请先修改初始密码")
     return user
 
 
@@ -253,11 +266,15 @@ def login(
             status_code=401,
         )
     check_login_rate_limit(rate_key, success=True)
-    old_csrf = request.session.get("csrf_token")
+    user.last_login_at = utcnow()
+    user.updated_at = utcnow()
+    session.commit()
     request.session.clear()
     request.session["user_id"] = user.id
-    request.session["csrf_token"] = old_csrf
-    return RedirectResponse("/projects", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["auth_version"] = user.auth_version
+    rotate_csrf_token(request)
+    destination = "/account" if user.must_change_password else "/projects"
+    return RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/logout")
@@ -676,143 +693,7 @@ def reference_file(
     return FileResponse(resolve_storage_key(reference.storage_key))
 
 
-@router.get("/admin")
-def admin_page(request: Request, session: Session = Depends(get_session)):
-    user = _user_or_redirect(request, session)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
-    require_admin(user)
-    users = session.scalars(select(User).order_by(User.created_at)).all()
-    recovery_tasks = session.scalars(
-        select(Generation)
-        .where(Generation.status == "recovery_required")
-        .order_by(Generation.created_at.desc())
-        .limit(50)
-    ).all()
-    counts = {
-        row[0]: row[1]
-        for row in session.execute(
-            select(Generation.status, func.count()).group_by(Generation.status)
-        )
-    }
-    return templates.TemplateResponse(
-        request,
-        "admin.html",
-        {"user": user, "users": users, "counts": counts,
-         "profiles": model_profiles(), "csrf_token": csrf_token(request),
-         "api_config": public_api_config(), "recovery_tasks": recovery_tasks},
-    )
-
-
-@router.post("/admin/providers/api")
-def configure_api_provider(
-    request: Request,
-    base_url: str = Form(...),
-    api_key: str = Form(""),
-    models: str = Form(...),
-    csrf: str = Form(...),
-    session: Session = Depends(get_session),
-):
-    require_csrf(request, csrf)
-    admin = current_user(request, session)
-    require_admin(admin)
-    if not 8 <= len(base_url) <= 500:
-        raise HTTPException(422, "API Base URL 长度无效")
-    if len(api_key) > 1000:
-        raise HTTPException(422, "API Key 长度超过限制")
-    if not 1 <= len(models) <= 12000:
-        raise HTTPException(422, "API 模型配置长度无效")
-    try:
-        save_api_config(base_url, api_key, models)
-    except ProviderConfigError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return RedirectResponse("/admin", status_code=303)
-
-
-@router.post("/admin/users")
-def create_user(
-    request: Request,
-    username: str = Form(..., min_length=2, max_length=80),
-    password: str = Form(..., min_length=8, max_length=200),
-    display_name: str = Form("", max_length=120),
-    department: str = Form("", max_length=120),
-    role: str = Form("user"),
-    csrf: str = Form(...),
-    session: Session = Depends(get_session),
-):
-    require_csrf(request, csrf)
-    admin = current_user(request, session)
-    require_admin(admin)
-    clean_username = username.strip()
-    if session.scalar(select(User).where(User.username == clean_username)):
-        raise HTTPException(409, "用户名已存在")
-    session.add(
-        User(username=clean_username, display_name=display_name.strip(), department=department.strip(),
-             role=role if role in {"user", "admin"} else "user", password_hash=hash_password(password))
-    )
-    session.commit()
-    return RedirectResponse("/admin", status_code=303)
-
-
-@router.post("/admin/users/{user_id}/toggle")
-def toggle_user(
-    user_id: str,
-    request: Request,
-    csrf: str = Form(...),
-    session: Session = Depends(get_session),
-):
-    require_csrf(request, csrf)
-    admin = current_user(request, session)
-    require_admin(admin)
-    user = session.get(User, user_id)
-    if not user or user.id == admin.id:
-        raise HTTPException(409, "不能操作该账号")
-    user.is_active = 0 if user.is_active else 1
-    session.commit()
-    return RedirectResponse("/admin", status_code=303)
-
-
 @router.get("/health")
 def health(session: Session = Depends(get_session)):
     queued = session.scalar(select(Generation).where(or_(Generation.status == "queued", Generation.status == "running")).limit(1))
     return {"status": "ok", "service": "ai-image-hub", "worker_backlog": bool(queued)}
-
-
-@router.post("/admin/generations/{generation_id}/recover")
-def recover_generation_admin(
-    generation_id: str,
-    request: Request,
-    csrf: str = Form(...),
-    session: Session = Depends(get_session),
-):
-    require_csrf(request, csrf)
-    admin = current_user(request, session)
-    require_admin(admin)
-    generation = session.get(Generation, generation_id)
-    if not generation:
-        raise HTTPException(404, "任务不存在")
-    try:
-        recover_generation(generation.id)
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return RedirectResponse("/admin", status_code=303)
-
-
-@router.post("/admin/generations/{generation_id}/resolve-failed")
-def resolve_generation_failed(
-    generation_id: str,
-    request: Request,
-    csrf: str = Form(...),
-    session: Session = Depends(get_session),
-):
-    require_csrf(request, csrf)
-    admin = current_user(request, session)
-    require_admin(admin)
-    generation = session.get(Generation, generation_id)
-    if not generation or generation.status != "recovery_required":
-        raise HTTPException(409, "任务不处于待恢复状态")
-    generation.status = "failed"
-    generation.error_message = "管理员已核对上游并将任务收敛为失败。"
-    generation.finished_at = utcnow()
-    session.commit()
-    return RedirectResponse("/admin", status_code=303)

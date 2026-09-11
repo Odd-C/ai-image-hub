@@ -33,6 +33,7 @@ def init_database() -> None:
     from image_hub.models import User
 
     Base.metadata.create_all(bind=engine)
+    _migrate_user_account_fields()
     _migrate_project_scope()
     with SessionLocal() as session:
         admin = session.scalar(select(User).where(User.username == settings.bootstrap_admin_username))
@@ -43,9 +44,35 @@ def init_database() -> None:
                     display_name="管理员",
                     password_hash=hash_password(settings.bootstrap_admin_password),
                     role="admin",
+                    must_change_password=0,
                 )
             )
             session.commit()
+
+
+def _migrate_user_account_fields() -> None:
+    """Add account lifecycle columns to legacy SQLite databases in place."""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    statements = {
+        "auth_version": "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1",
+        "last_login_at": "ALTER TABLE users ADD COLUMN last_login_at DATETIME",
+        "updated_at": "ALTER TABLE users ADD COLUMN updated_at DATETIME",
+        "must_change_password": (
+            "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+        ),
+    }
+    with engine.begin() as connection:
+        for name, statement in statements.items():
+            if name not in columns:
+                connection.execute(text(statement))
+        connection.execute(
+            text("UPDATE users SET updated_at=COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
+        )
 
 
 def _migrate_project_scope() -> None:

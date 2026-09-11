@@ -6,6 +6,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from image_hub.config import settings
 from image_hub.db import init_database
+from image_hub.management import router as management_router
 from image_hub.web import router
 from image_hub.worker import generation_worker
 
@@ -32,6 +33,7 @@ app.add_middleware(
     max_age=60 * 60 * 12,
 )
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
+app.include_router(management_router)
 app.include_router(router)
 
 

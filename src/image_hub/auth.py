@@ -35,11 +35,21 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-def current_user(request: Request, session: Session) -> User:
+def current_user(
+    request: Request, session: Session, *, allow_password_change: bool = False
+) -> User:
     user_id = request.session.get("user_id")
     user = session.get(User, user_id) if user_id else None
-    if user is None or not user.is_active:
+    session_auth_version = request.session.get("auth_version")
+    if (
+        user is None
+        or not user.is_active
+        or session_auth_version != user.auth_version
+    ):
+        request.session.clear()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    if user.must_change_password and not allow_password_change:
+        raise HTTPException(status_code=403, detail="请先修改初始密码")
     return user
 
 
@@ -53,6 +63,12 @@ def csrf_token(request: Request) -> str:
     if not token:
         token = secrets.token_urlsafe(32)
         request.session["csrf_token"] = token
+    return token
+
+
+def rotate_csrf_token(request: Request) -> str:
+    token = secrets.token_urlsafe(32)
+    request.session["csrf_token"] = token
     return token
 
 
