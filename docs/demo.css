@@ -81,14 +81,29 @@ main { position: relative; height: calc(100vh - 50px); }
 .world { position: absolute; width: 5000px; height: 3600px; transform-origin: 0 0; }
 .world > svg, #nodes { position: absolute; inset: 0; }
 .world > svg { overflow: visible; pointer-events: none; }
-.world path { fill: none; stroke: rgba(23, 23, 23, 0.35); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+.world path { fill: none; vector-effect: non-scaling-stroke; }
+.world .input-link { stroke: rgba(23, 23, 23, 0.35); stroke-width: 1.25; transition: stroke 0.16s ease, stroke-width 0.16s ease; }
+/* Hover feedback reaches the visible stroke from the invisible hit path that
+   follows it, so the whole 14px band reacts, not just the 1.25px line. */
+.world .input-link:has(+ .link-hit:hover) { stroke: rgba(23, 23, 23, 0.62); stroke-width: 1.6; }
+/* Selection changes stroke width as well as ink, so it never depends on colour
+   alone and never depends on an animation. The doubled selector keeps selection
+   dominant over the `:has()` hover rule, whose specificity is higher. */
+.world .input-link.selected,
+.world .input-link.selected:has(+ .link-hit:hover) { stroke: var(--ink); stroke-width: 2.25; }
+.world .link-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 .world path.temp { stroke: var(--ink); stroke-width: 1.5; }
 .world text { fill: var(--muted); font-size: 10px; font-weight: 600; }
 .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--tertiary); pointer-events: none; }
 .empty strong { color: var(--ink); font-size: 15px; font-weight: 600; }
 .empty span { margin: 4px 0 16px; font-size: 12px; }
 .empty button { height: 32px; padding: 0 11px; border: 0; border-radius: 6px; background: var(--white); box-shadow: 0 0 0 1px var(--line-strong); pointer-events: auto; }
-.node { position: absolute; overflow: visible; border-radius: 8px; background: var(--white); box-shadow: var(--node-shadow); user-select:none; -webkit-user-select:none; transition: box-shadow var(--ease), opacity var(--ease); }.node :is(textarea,input,select,[contenteditable="true"],[contenteditable=""]){user-select:text;-webkit-user-select:text}
+/* The node layer spans the whole world but must not swallow pointer events:
+   otherwise it covers `#links` and the transparent link hit paths could never
+   be clicked. Nodes re-enable events for themselves, and blank canvas clicks
+   keep landing on `#world` exactly as before. */
+#nodes { pointer-events: none; }
+.node { position: absolute; overflow: visible; pointer-events: auto; border-radius: 8px; background: var(--white); box-shadow: var(--node-shadow); user-select:none; -webkit-user-select:none; transition: box-shadow var(--ease), opacity var(--ease); }.node :is(textarea,input,select,[contenteditable="true"],[contenteditable=""]){user-select:text;-webkit-user-select:text}
 .node:hover, .node:focus-within { box-shadow: 0 0 0 1px var(--line-strong), 0 4px 12px rgba(0, 0, 0, 0.06); }
 .node header, .image footer { display: flex; align-items: center; justify-content: space-between; user-select: none; cursor: grab; }
 .node header { height: 36px; padding: 0 8px 0 12px; border-bottom: 1px solid var(--line); }

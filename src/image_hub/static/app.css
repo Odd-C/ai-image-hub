@@ -223,9 +223,20 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .canvas-world { position: absolute; left: 0; top: 0; width: 5000px; height: 3600px; transform-origin: 0 0; will-change: transform; }
 .canvas-links, .canvas-nodes { position: absolute; inset: 0; }
 .canvas-links { overflow: visible; pointer-events: none; }
-.canvas-links path { fill: none; stroke: rgba(23, 23, 23, 0.35); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+.canvas-links path { fill: none; vector-effect: non-scaling-stroke; }
+.canvas-links .input-link { stroke: rgba(23, 23, 23, 0.35); stroke-width: 1.25; }
+/* Hover feedback reaches the visible stroke from the invisible hit path that
+   follows it, so the whole 14px band reacts, not just the 1.25px line. */
+.canvas-links .input-link:has(+ .link-hit:hover) { stroke: rgba(23, 23, 23, 0.62); stroke-width: 1.6; }
+/* Selection changes stroke width as well as ink, so it never depends on colour
+   alone and never depends on an animation. The doubled selector keeps selection
+   dominant over the `:has()` hover rule, whose specificity is higher. */
+.canvas-links .input-link.selected,
+.canvas-links .input-link.selected:has(+ .link-hit:hover) { stroke: var(--ink); stroke-width: 2.25; }
+.canvas-links .link-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 .canvas-links .temporary-link { stroke: var(--ink); stroke-width: 1.5; }
 .canvas-links text { fill: var(--muted); font-size: 10px; font-weight: 600; }
+@media (prefers-reduced-motion: no-preference) { .canvas-links .input-link { transition: stroke var(--ease), stroke-width var(--ease); } }
 .canvas-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--tertiary); pointer-events: none; }
 .canvas-empty strong { color: var(--ink); font-size: 15px; font-weight: 600; letter-spacing: -0.012em; }
 .canvas-empty span { margin-top: 4px; font-size: 12px; }
@@ -233,9 +244,15 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round
 .canvas-empty button:hover { background: var(--hover); }
 
 /* Canvas nodes */
+/* The node layer spans the whole world but must not swallow pointer events:
+   otherwise it covers `#canvas-links` and the transparent link hit paths could
+   never be clicked. Nodes re-enable events for themselves, and blank canvas
+   clicks keep landing on `.canvas-world` exactly as before. */
+.canvas-nodes { pointer-events: none; }
 .canvas-node {
   position: absolute;
   overflow: visible;
+  pointer-events: auto;
   border-radius: 8px;
   background: var(--white);
   box-shadow: var(--node-shadow);

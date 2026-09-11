@@ -16,7 +16,11 @@
   const imageOffset = 32;
   const resultClickDelay = 220;
   const urlOnlyMessage = '暂不支持仅粘贴图片链接，请复制图片本身或下载后拖入';
-  const state = {version: core.SCHEMA_VERSION, viewport: {x: 0, y: 0, zoom: 1}, nodes: [], selectedIds: new Set(), connecting: null};
+  /* Two selection modes exist and never overlap: `selectedIds` holds canvas
+     nodes, `selectedLinks` holds input connections. Keeping them exclusive is
+     what makes `Delete` unambiguous. A link key is `target::source`, which is
+     unique because one card can reference the same input only once. */
+  const state = {version: core.SCHEMA_VERSION, viewport: {x: 0, y: 0, zoom: 1}, nodes: [], selectedIds: new Set(), selectedLinks: new Set(), connecting: null};
   const localFiles = new Map();
   const objectUrls = new Map();
   const extensionHooks = new Set();
@@ -134,6 +138,7 @@
     removed.forEach(id => { if (objectUrls.has(id)) URL.revokeObjectURL(objectUrls.get(id)); objectUrls.delete(id); localFiles.delete(id); });
     state.nodes = core.removePresentationNodes(state.nodes, removed);
     state.selectedIds = new Set([...state.selectedIds].filter(id => !removed.has(id)));
+    state.selectedLinks = new Set(liveLinkKeys().filter(key => !removed.has(linkTarget(key))));
     render(); scheduleSave();
   }
   function syncSelectionClasses() {
@@ -143,16 +148,78 @@
       element.setAttribute('aria-selected', String(selected));
     });
   }
+
+  /* ---- input connection selection ---------------------------------------
+     One connection equals one entry of the target card's `orderedInputIds`,
+     which is the same relationship the reference-thumbnail 「×」 button edits.
+     Selecting a link never touches node selection and vice versa, so `Delete`
+     has exactly one meaning at a time. */
+  function linkKey(source, target) { return `${target}::${source}`; }
+  function linkTarget(key) { const at = key.indexOf('::'); return at < 0 ? '' : key.slice(0, at); }
+  function linkSource(key) { const at = key.indexOf('::'); return at < 0 ? '' : key.slice(at + 2); }
+  function liveLinkKeys() {
+    return [...state.selectedLinks].filter(key => {
+      const target = nodeById(linkTarget(key));
+      return core.isGenerationNode(target) && (target.orderedInputIds || []).includes(linkSource(key));
+    });
+  }
+  /* Presentation-only, exactly like syncSelectionClasses: toggling a class
+     avoids re-rendering the SVG under the pointer. */
+  function syncLinkSelectionClasses() {
+    $$('#canvas-links .input-link, #canvas-links .link-hit').forEach(element => element.classList.toggle('selected', state.selectedLinks.has(linkKey(element.dataset.source, element.dataset.target))));
+  }
+  function clearLinkSelection() {
+    if (!state.selectedLinks.size) return false;
+    state.selectedLinks.clear(); syncLinkSelectionClasses(); return true;
+  }
+  function selectLink(source, target, additive = false) {
+    if (!source || !target) return;
+    const key = linkKey(source, target);
+    /* Only node selection is dropped here; the link set itself is what an
+       additive Shift click extends. */
+    if (state.selectedIds.size) { state.selectedIds.clear(); syncSelectionClasses(); }
+    if (additive) { if (state.selectedLinks.has(key)) state.selectedLinks.delete(key); else state.selectedLinks.add(key); }
+    else state.selectedLinks = new Set([key]);
+    syncLinkSelectionClasses();
+  }
   /* Selection stays a presentation-only DOM update so a single click never
      re-renders the node under the pointer (double click must survive). */
   function selectNode(id, additive = false, focus = true) {
     const node = nodeById(id); if (!node) return;
+    clearLinkSelection();
     if (additive) { if (state.selectedIds.has(id)) state.selectedIds.delete(id); else state.selectedIds.add(id); }
     else state.selectedIds = new Set([id]);
     syncSelectionClasses();
     if (focus) requestAnimationFrame(() => $(`[data-node-id="${id}"]`)?.focus({preventScroll: true}));
   }
-  function clearSelection() { if (!state.selectedIds.size) return; state.selectedIds.clear(); syncSelectionClasses(); }
+  function clearSelection() { const clearedLinks = clearLinkSelection(); if (!state.selectedIds.size) return clearedLinks; state.selectedIds.clear(); syncSelectionClasses(); return true; }
+
+  /* Removing a connection drops that one reference from the target card's
+     ordered input list. Everything that is not that exact entry keeps its
+     relative position, and uploads, results and Generations are untouched.
+     A key whose reference is already gone is a silent no-op. */
+  function removeLinks(keys) {
+    const byTarget = new Map();
+    keys.forEach(key => {
+      const target = linkTarget(key); const source = linkSource(key);
+      if (!target || !source) return;
+      if (!byTarget.has(target)) byTarget.set(target, new Set());
+      byTarget.get(target).add(source);
+    });
+    let removed = 0;
+    byTarget.forEach((sources, targetId) => {
+      const node = nodeById(targetId);
+      if (!core.isGenerationNode(node) || !Array.isArray(node.orderedInputIds)) return;
+      const next = node.orderedInputIds.filter(ref => { if (!sources.has(ref)) return true; removed += 1; return false; });
+      if (next.length === node.orderedInputIds.length) return;
+      node.orderedInputIds = next; syncDirty(node);
+    });
+    if (!removed) return 0;
+    state.selectedLinks.clear();
+    render(); scheduleSave();
+    toast(removed === 1 ? '已移除 1 条连线' : `已移除 ${removed} 条连线`);
+    return removed;
+  }
 
   function copySelection() {
     if (!state.selectedIds.size) return false;
@@ -320,8 +387,16 @@
 
   function curvePath(a, b) { const bend = Math.max(70, Math.abs(b.x - a.x) * .45); return `M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}`; }
   function portWorld(nodeId, selector) { const port = $(`[data-node-id="${nodeId}"] ${selector}`); const viewport = $('#canvas-viewport'); if (!port || !viewport) return null; return core.rectCenterToWorld(port.getBoundingClientRect(), viewport.getBoundingClientRect(), state.viewport); }
+  /* A 1.25px stroke is unhittable with a mouse, so every connection renders a
+     second, invisible hit path sharing the identical `d`. The hit path keeps
+     `vector-effect: non-scaling-stroke`, so its 14px grab band stays 14 screen
+     pixels at any zoom. Both paths sit in `#canvas-links`, which stays
+     `pointer-events: none`: only the hit path re-enables pointer events, and
+     `#canvas-nodes` is a later sibling so nodes, ports and the toolbar are
+     never covered. Port drags and the temporary link get no hit path. */
   function renderLinksNow() {
     const lines = [];
+    const selected = key => state.selectedLinks.has(key) ? ' selected' : '';
     generationNodes().forEach(node => (node.orderedInputIds || []).forEach((ref, index) => {
       const parsed = core.parseResultRefId(ref);
       const sourceElement = parsed
@@ -333,7 +408,11 @@
       const rect = viewport.getBoundingClientRect();
       const a = core.rectCenterToWorld(sourceElement.getBoundingClientRect(), rect, state.viewport);
       const b = core.rectCenterToWorld(target.getBoundingClientRect(), rect, state.viewport);
-      lines.push(`<path class="input-link" data-source="${escapeHtml(ref)}" data-target="${node.id}" data-order="${index + 1}" data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${curvePath(a, b)}"/>`);
+      const path = curvePath(a, b);
+      const key = linkKey(ref, node.id);
+      const meta = `data-source="${escapeHtml(ref)}" data-target="${node.id}" data-order="${index + 1}"`;
+      lines.push(`<path class="input-link${selected(key)}" ${meta} data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${path}"/>`);
+      lines.push(`<path class="link-hit${selected(key)}" ${meta} d="${path}"/>`);
     }));
     if (state.connecting) lines.push(`<path class="temporary-link" d="${curvePath(state.connecting.start, state.connecting.current)}"/>`);
     $('#canvas-links').innerHTML = lines.join(''); updateMinimap();
@@ -616,6 +695,7 @@
 
   function importCanvas(payload) {
     state.viewport = {x: Number(payload.viewport?.x) || 0, y: Number(payload.viewport?.y) || 0, zoom: Number(payload.viewport?.zoom) || 1};
+    state.selectedIds.clear(); state.selectedLinks.clear();
     const known = [core.IMAGE, core.GENERATION, core.LEGACY_REQUEST, core.LEGACY_RESULT];
     const loaded = (Array.isArray(payload.nodes) ? payload.nodes : []).filter(node => node && known.includes(node.type));
     const migrated = core.migrateCanvasNodes(loaded, splitOptions());
@@ -623,7 +703,7 @@
     if (!state.nodes.length && payload.draft) { const draft = payload.draft; state.nodes.push(defaultGeneration(220, 160, {profileId: draft.profile, ratio: draft.ratio, resolution: draft.resolution, prompt: draft.prompt})); }
     return migrated.migrated;
   }
-  function focusAndCenterNode(node) { const viewport = $('#canvas-viewport'); const rect = viewport.getBoundingClientRect(); const height = $(`[data-node-id="${node.id}"]`)?.getBoundingClientRect().height / state.viewport.zoom || 300; state.selectedIds = new Set([node.id]); state.viewport.x = rect.width / 2 - (node.x + node.width / 2) * state.viewport.zoom; state.viewport.y = rect.height / 2 - (node.y + height / 2) * state.viewport.zoom; render(); scheduleSave(); }
+  function focusAndCenterNode(node) { const viewport = $('#canvas-viewport'); const rect = viewport.getBoundingClientRect(); const height = $(`[data-node-id="${node.id}"]`)?.getBoundingClientRect().height / state.viewport.zoom || 300; clearLinkSelection(); state.selectedIds = new Set([node.id]); state.viewport.x = rect.width / 2 - (node.x + node.width / 2) * state.viewport.zoom; state.viewport.y = rect.height / 2 - (node.y + height / 2) * state.viewport.zoom; render(); scheduleSave(); }
   function pulseResult(nodeId, resultId) {
     requestAnimationFrame(() => {
       const tile = $(`[data-node-id="${nodeId}"] [data-result-id="${resultId}"]`);
@@ -698,13 +778,20 @@
   function closeShortcut() { $('#shortcut-popover').hidden = true; }
   function openShortcut() { closeContextMenu(); const pop = $('#shortcut-popover'); pop.hidden = false; $('[data-close-overlay]', pop).focus(); }
   function closeContextMenu(restore = false) { const menu = $('#context-menu'); if (menu.hidden) return false; menu.hidden = true; if (restore && context?.focusId) $(`[data-node-id="${context.focusId}"]`)?.focus(); context = null; return true; }
-  function contextItems(node) {
+  function contextItems(node, link = null) {
+    if (link) return [{label: '移除连线', action: 'unlink'}];
     if (!node) return [{label: '上传图片', action: 'upload'}, {label: '新建生图', action: 'request'}, {label: '粘贴', action: 'paste', disabled: !canvasClipboard}, {label: '适应内容', action: 'fit'}, {label: '快捷键', action: 'shortcuts'}];
     const common = [{label: '复制', action: 'copy'}, {label: '从画布移除', action: 'remove'}];
     if (core.isGenerationNode(node)) return [...common, {label: node.expanded ? '收起为结果简洁态' : '展开编辑参数', action: 'toggle'}, {label: '从主图创建生图', action: 'derive', disabled: !primaryOf(node)?.artifactUrl}];
     return [...common, {label: '打开大图', action: 'open', disabled: !node.src}, {label: '从此图创建生图', action: 'derive'}];
   }
-  function openContextMenu(event, node) { event.preventDefault(); closeShortcut(); activePickerId = ''; const menu = $('#context-menu'); const point = worldPoint(event.clientX, event.clientY); context = {nodeId: node?.id || '', point, focusId: node?.id || ''}; menu.innerHTML = contextItems(node).map(item => `<button type="button" role="menuitem" data-context-action="${item.action}" ${item.disabled ? 'disabled' : ''}>${item.label}</button>`).join(''); menu.hidden = false; const margin = 8; const rect = menu.getBoundingClientRect(); menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`; menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`; menu.focus(); $('button:not(:disabled)', menu)?.focus(); }
+  /* Right-clicking a connection selects it first, so the menu and the keyboard
+     share one target. Right-clicking blank canvas or a node keeps the existing
+     items untouched. */
+  function openContextMenu(event, node, link = null) {
+    event.preventDefault(); closeShortcut(); activePickerId = '';
+    if (link && !state.selectedLinks.has(linkKey(link.source, link.target))) selectLink(link.source, link.target, false);
+    const menu = $('#context-menu'); const point = worldPoint(event.clientX, event.clientY); context = {nodeId: node?.id || '', point, focusId: node?.id || ''}; menu.innerHTML = contextItems(node, link).map(item => `<button type="button" role="menuitem" data-context-action="${item.action}" ${item.disabled ? 'disabled' : ''}>${item.label}</button>`).join(''); menu.hidden = false; const margin = 8; const rect = menu.getBoundingClientRect(); menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`; menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`; menu.focus(); $('button:not(:disabled)', menu)?.focus(); }
   /* Every download entry (result rail, viewer) funnels through the single
      `?download=true` URL, which the server answers with a transcoded PNG. The
      blob route is used instead of a bare anchor so a readable message replaces
@@ -729,7 +816,8 @@
   }
   function runContextAction(action) {
     const node = nodeById(context?.nodeId); const point = context?.point;
-    if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); }
+    if (action === 'unlink') removeLinks([...state.selectedLinks]);
+    else if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); }
     else if (action === 'request') addGeneration(point.x, point.y);
     else if (action === 'paste') pasteClipboard(point);
     else if (action === 'fit') fitView();
@@ -801,6 +889,10 @@
     viewport.addEventListener('wheel', event => { event.preventDefault(); zoomAt(state.viewport.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY); }, {passive: false});
     viewport.addEventListener('pointerdown', event => {
       closeContextMenu();
+      /* A connection click is consumed before any pan or drag can start, so
+         selecting a link never moves the canvas or a node. */
+      const linkHit = event.target.closest?.('.link-hit');
+      if (linkHit) { event.preventDefault(); if (event.button !== 2) selectLink(linkHit.dataset.source, linkHit.dataset.target, event.shiftKey); return; }
       const nodeEl = event.target.closest('.canvas-node');
       const node = nodeEl && nodeById(nodeEl.dataset.nodeId);
       if (!node) { if (event.button === 0 && (event.target === viewport || event.target.closest('.canvas-world'))) { event.preventDefault(); pan = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.viewport.x, y: state.viewport.y, moved: false}; viewport.setPointerCapture?.(event.pointerId); syncDraggingClass(); } return; }
@@ -811,7 +903,11 @@
     });
     viewport.addEventListener('pointermove', event => { lastCanvasPointer = worldPoint(event.clientX, event.clientY); movePointer(event); }); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { const wasActive = Boolean((drag && drag.pointerId === event.pointerId) || (pan && pan.pointerId === event.pointerId) || (state.connecting && state.connecting.pointerId === event.pointerId)); if (state.connecting?.pointerId === event.pointerId) cancelConnection(); clearPointerInteraction(event.pointerId); if (wasActive) scheduleSave(); });
     viewport.addEventListener('selectstart', event => { if (drag || pan || state.connecting) event.preventDefault(); });
-    viewport.addEventListener('contextmenu', event => { const el = event.target.closest('.canvas-node'); openContextMenu(event, el ? nodeById(el.dataset.nodeId) : null); });
+    viewport.addEventListener('contextmenu', event => {
+      const linkHit = event.target.closest?.('.link-hit');
+      if (linkHit) { openContextMenu(event, null, {source: linkHit.dataset.source, target: linkHit.dataset.target}); return; }
+      const el = event.target.closest('.canvas-node'); openContextMenu(event, el ? nodeById(el.dataset.nodeId) : null);
+    });
     $('#canvas-nodes').addEventListener('dblclick', event => {
       clearTimeout(resultClickTimer); resultClickTimer = null;
       const nodeEl = event.target.closest('.canvas-node'); const node = nodeEl && nodeById(nodeEl.dataset.nodeId);
@@ -885,7 +981,7 @@
         const tile = event.target.closest?.('.result-tile');
         if (tile && !editable) { const node = nodeById(tile.closest('.canvas-node')?.dataset.nodeId); const result = node && resultInNode(node, tile.dataset.resultId); if (node && result) { event.preventDefault(); activateResult(node, displayBatch(node), result); return; } }
       }
-      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
+      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } closed = clearLinkSelection() || closed; if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
       if ($('#image-viewer').open) {
         if (editable) return;
         if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomViewer(viewerState.scale * 1.2); }
@@ -897,7 +993,11 @@
       if (editable) return;
       if (event.key === '?' ) { event.preventDefault(); openShortcut(); return; }
       if (meta && event.key.toLowerCase() === 'c' && canvasFocused) { event.preventDefault(); copySelection(); }
-      else if (meta && event.key.toLowerCase() === 'a' && canvasFocused) { event.preventDefault(); state.selectedIds = new Set(state.nodes.map(node => node.id)); syncSelectionClasses(); }
+      else if (meta && event.key.toLowerCase() === 'a' && canvasFocused) { event.preventDefault(); clearLinkSelection(); state.selectedIds = new Set(state.nodes.map(node => node.id)); syncSelectionClasses(); }
+      /* A selected connection wins over node selection; the two modes never
+         coexist, so this single key stays unambiguous. Clicking a link leaves
+         no focusable element behind, hence the explicit `selectedLinks` test. */
+      else if ((event.key === 'Delete' || event.key === 'Backspace') && state.selectedLinks.size) { event.preventDefault(); removeLinks([...state.selectedLinks]); }
       else if ((event.key === 'Delete' || event.key === 'Backspace') && canvasFocused && state.selectedIds.size) { event.preventDefault(); removeIds(state.selectedIds); }
       else if (event.key === '0' && canvasFocused) { event.preventDefault(); fitView(); }
       else if ((event.key === '+' || event.key === '=') && canvasFocused) { event.preventDefault(); zoomAt(state.viewport.zoom + .1, innerWidth / 2, innerHeight / 2); }

@@ -136,7 +136,7 @@ function splitSettled(){const outcome=splitNodes(state.nodes);if(!outcome.change
 function seeds(){
   const request=normalizeRequest({prompt:'保留产品比例，使用自然侧光与克制的浅灰背景',profileId:'api:seedream-demo',provider:'API',ratio:'4:3',resolution:'2K',count:1,inputs:['landscape']});
   const node=normalizeNode({id:'generation-a',type:'generation_node',x:560,y:140,w:344,expanded:false,prompt:request.prompt,provider:request.provider,profileId:request.profileId,ratio:request.ratio,resolution:request.resolution,count:request.count,inputs:request.inputs,primaryResultId:'result-a',activeBatch:{id:'batch-a',request,settled:true,results:[{id:'result-a',generationId:'demo-generation-a',artifactUrl:'./demo-result.svg',status:'succeeded',sentiment:'satisfied',provider:'API',model:'Seedream Studio（虚构）',prompt:request.prompt,profileId:request.profileId,parameters:{ratio:request.ratio,resolution:request.resolution,count:1},aspect:'4/3'}]}});
-  return{id:'spring',name:'春季产品视觉',view:{x:0,y:0,z:1},selected:[],clipboard:null,nodes:[{id:'landscape',type:'image',x:120,y:160,w:300,aspect:'3/1',naturalWidth:1200,naturalHeight:400,src:'./demo-landscape.svg',title:'fictional-landscape-3x1.svg'},node]};
+  return{id:'spring',name:'春季产品视觉',view:{x:0,y:0,z:1},selected:[],selectedLinks:[],clipboard:null,nodes:[{id:'landscape',type:'image',x:120,y:160,w:300,aspect:'3/1',naturalWidth:1200,naturalHeight:400,src:'./demo-landscape.svg',title:'fictional-landscape-3x1.svg'},node]};
 }
 function readStore(){
   try{const raw=localStorage.getItem(STORE_KEY);if(raw){const parsed=JSON.parse(raw);if(parsed?.projects?.length)return{store:parsed,migrated:false}}}catch{}
@@ -152,7 +152,7 @@ if(!Array.isArray(store.projects)||!store.projects.length)store={current:'spring
    existed still holds multi-image cards, so it is split once here and the
    result is written back under the current schema version. */
 let needsSave=loaded.migrated;
-store.projects.forEach(project=>{project.version=SCHEMA_VERSION;project.nodes=restoreNodes(project.nodes);const split=splitNodes(project.nodes);project.nodes=split.nodes;if(split.changed)needsSave=true});
+store.projects.forEach(project=>{project.version=SCHEMA_VERSION;project.nodes=restoreNodes(project.nodes);project.selectedLinks=Array.isArray(project.selectedLinks)?project.selectedLinks:[];const split=splitNodes(project.nodes);project.nodes=split.nodes;if(split.changed)needsSave=true});
 state=store.projects.find(p=>p.id===store.current)||store.projects[0];
 store.current=state.id;
 const node=id=>state.nodes.find(n=>n.id===id);
@@ -171,8 +171,44 @@ function defaultGeneration(x,y,inherit={}){
 function addGeneration(x,y,inherit={}){const created=defaultGeneration(x,y,inherit);state.nodes.push(created);select(created.id,false);render();save();requestAnimationFrame(()=>$(`[data-id="${created.id}"] textarea`)?.focus());return created}
 function addInput(nodeId,ref){const target=node(nodeId);if(!isGeneration(target))return false;const parsed=parseRef(ref);if(parsed&&parsed.nodeId===nodeId){toast('不能引用本节点自己的结果',true);return false}if(!resolveRef(ref))return false;if(target.inputs.includes(ref))return false;target.inputs.push(ref);syncDirty(target);render();save();return true}
 function syncDirty(target){const next=isDirty(target);if(next===target.dirty)return;target.dirty=next}
-function remove(ids){const gone=new Set(ids);gone.forEach(id=>{if(objectUrls.has(id))URL.revokeObjectURL(objectUrls.get(id));objectUrls.delete(id);localFiles.delete(id)});state.nodes=state.nodes.filter(n=>!gone.has(n.id)).map(n=>isGeneration(n)?{...n,inputs:n.inputs.filter(ref=>!gone.has(refOwner(ref)))}:n);state.selected=state.selected.filter(id=>!gone.has(id));render();save()}
-function select(id,shift){const target=node(id);if(!target)return;if(shift)state.selected=state.selected.includes(id)?state.selected.filter(x=>x!==id):[...state.selected,id];else state.selected=[id];$$('.node').forEach(el=>{const on=state.selected.includes(el.dataset.id);el.classList.toggle('selected',on);el.setAttribute('aria-selected',String(on))})}
+function remove(ids){const gone=new Set(ids);gone.forEach(id=>{if(objectUrls.has(id))URL.revokeObjectURL(objectUrls.get(id));objectUrls.delete(id);localFiles.delete(id)});state.nodes=state.nodes.filter(n=>!gone.has(n.id)).map(n=>isGeneration(n)?{...n,inputs:n.inputs.filter(ref=>!gone.has(refOwner(ref)))}:n);state.selected=state.selected.filter(id=>!gone.has(id));state.selectedLinks=state.selectedLinks.filter(key=>!gone.has(linkTarget(key)));render();save()}
+function select(id,shift){const target=node(id);if(!target)return;clearLinkSelection();if(shift)state.selected=state.selected.includes(id)?state.selected.filter(x=>x!==id):[...state.selected,id];else state.selected=[id];$$('.node').forEach(el=>{const on=state.selected.includes(el.dataset.id);el.classList.toggle('selected',on);el.setAttribute('aria-selected',String(on))})}
+
+/* ---- input connection selection -----------------------------------------
+   One connection equals one entry of the target card's `inputs` list, which is
+   the same relationship the reference-thumbnail 「×」 button edits. Selecting a
+   link never touches node selection and vice versa, so `Delete` has exactly one
+   meaning at a time. */
+function linkKey(source,target){return `${target}::${source}`}
+function linkTarget(key){const at=key.indexOf('::');return at<0?'':key.slice(0,at)}
+function linkSource(key){const at=key.indexOf('::');return at<0?'':key.slice(at+2)}
+function liveLinkKeys(){return (state.selectedLinks||[]).filter(key=>{const target=node(linkTarget(key));return isGeneration(target)&&target.inputs.includes(linkSource(key))})}
+/* Presentation-only, exactly like select(): toggling a class avoids
+   re-rendering the SVG under the pointer. */
+function syncLinkSelection(){$('#links').querySelectorAll('.input-link,.link-hit').forEach(el=>el.classList.toggle('selected',state.selectedLinks.includes(linkKey(el.dataset.source,el.dataset.target))))}
+function clearLinkSelection(){if(!(state.selectedLinks||[]).length)return false;state.selectedLinks=[];syncLinkSelection();return true}
+function selectLink(source,target,shift){if(!source||!target)return;const key=linkKey(source,target);if(state.selected.length){state.selected=[];$$('.node').forEach(el=>{el.classList.remove('selected');el.setAttribute('aria-selected','false')})}state.selectedLinks=shift?(state.selectedLinks.includes(key)?state.selectedLinks.filter(x=>x!==key):[...state.selectedLinks,key]):[key];syncLinkSelection()}
+/* Removing a connection drops that one reference from the target card's input
+   list. Everything that is not that exact entry keeps its relative position,
+   and uploads, results and Generations are untouched. A key whose reference is
+   already gone is a silent no-op. */
+function removeLinks(keys){
+  const byTarget=new Map();
+  keys.forEach(key=>{const target=linkTarget(key),source=linkSource(key);if(!target||!source)return;if(!byTarget.has(target))byTarget.set(target,new Set());byTarget.get(target).add(source)});
+  let removed=0;
+  byTarget.forEach((sources,targetId)=>{
+    const target=node(targetId);
+    if(!isGeneration(target)||!Array.isArray(target.inputs))return;
+    const next=target.inputs.filter(ref=>{if(!sources.has(ref))return true;removed++;return false});
+    if(next.length===target.inputs.length)return;
+    target.inputs=next;syncDirty(target);
+  });
+  if(!removed)return 0;
+  state.selectedLinks=[];
+  render();save();
+  toast(removed===1?'已移除 1 条连线':`已移除 ${removed} 条连线`);
+  return removed;
+}
 function copy(){if(!state.selected.length)return;state.clipboard={nodes:structuredClone(state.nodes),ids:[...state.selected]};save();toast(`已复制 ${state.selected.length} 个节点`)}
 function paste(at){
   if(!state.clipboard?.ids.length)return;
@@ -185,7 +221,7 @@ function paste(at){
     clone.expanded=true;clone.error='';clone.dirty=false;clone.activeBatch=null;clone.attempt=null;clone.primaryResultId='';
     return normalizeNode(clone);
   });
-  state.nodes.push(...clones);state.selected=clones.map(n=>n.id);render();save();toast(`已粘贴 ${clones.length} 个节点`);
+  state.nodes.push(...clones);state.selected=clones.map(n=>n.id);state.selectedLinks=[];render();save();toast(`已粘贴 ${clones.length} 个节点`);
 }
 
 /* ---- markup ------------------------------------------------------------- */
@@ -232,7 +268,7 @@ function imageMarkup(n){
   const label=`${n.title||'参考图片'}${n.naturalWidth?` · ${n.naturalWidth} × ${n.naturalHeight}`:''}`;
   return `<article class="node image ${state.selected.includes(n.id)?'selected':''}" data-id="${n.id}" data-node-type="image" aria-selected="${state.selected.includes(n.id)}" tabindex="-1" style="left:${n.x}px;top:${n.y}px;width:${n.w}px"><div class="frame" style="aspect-ratio:${n.aspect}">${media}</div><footer><span title="${esc(label)}">${esc(label)}</span><div class="image-actions"><div class="file-actions">${missing?'':`<button data-open-image aria-label="打开原图">${icons.open}</button>`}</div><div class="remove-actions"><button data-delete aria-label="从画布移除">${icons.remove}</button></div></div></footer><button class="port out" aria-label="从这张图片创建连接"></button></article>`;
 }
-function render(){state.selected=state.selected.filter(id=>node(id));$('#nodes').innerHTML=state.nodes.map(n=>isGeneration(n)?generationMarkup(n):imageMarkup(n)).join('');$('#empty').hidden=state.nodes.length>0;apply();requestAnimationFrame(()=>{links();minimap()});renderProjects()}
+function render(){state.selected=state.selected.filter(id=>node(id));state.selectedLinks=liveLinkKeys();$('#nodes').innerHTML=state.nodes.map(n=>isGeneration(n)?generationMarkup(n):imageMarkup(n)).join('');$('#empty').hidden=state.nodes.length>0;apply();requestAnimationFrame(()=>{links();minimap()});renderProjects()}
 /* The header chevron is the only control that returns a card to the collapsed
    result summary, so it also owns the expand pin. */
 function toggleGeneration(n){if(!isGeneration(n))return;n.expanded=!n.expanded;n.expandedPinned=n.expanded;render();requestAnimationFrame(()=>requestAnimationFrame(()=>{links();minimap()}));save()}
@@ -244,7 +280,27 @@ function activateResult(n,batch,result){let changed=false;const results=batchRes
 function apply(){$('#world').style.transform=`translate(${state.view.x}px,${state.view.y}px) scale(${state.view.z})`;$('#zoom').textContent=`${Math.round(state.view.z*100)}%`}
 function portPoint(id,sel){const p=$(`[data-id="${id}"] ${sel}`),v=$('#viewport');if(!p)return null;const a=p.getBoundingClientRect(),b=v.getBoundingClientRect();return{x:(a.left+a.width/2-b.left-state.view.x)/state.view.z,y:(a.top+a.height/2-b.top-state.view.y)/state.view.z}}
 const curve=(a,b)=>{const q=Math.max(70,Math.abs(b.x-a.x)*.45);return`M ${a.x} ${a.y} C ${a.x+q} ${a.y}, ${b.x-q} ${b.y}, ${b.x} ${b.y}`};
-function links(){let h='';state.nodes.filter(isGeneration).forEach(n=>n.inputs.forEach((ref,i)=>{const parsed=parseRef(ref),from=parsed?$(`[data-id="${parsed.nodeId}"] [data-result="${parsed.resultId}"] .tile-port`):$(`[data-id="${ref}"] .out`),to=$(`[data-id="${n.id}"] .in`),v=$('#viewport');if(!from||!to)return;const b=v.getBoundingClientRect(),c=e=>{const r=e.getBoundingClientRect();return{x:(r.left+r.width/2-b.left-state.view.x)/state.view.z,y:(r.top+r.height/2-b.top-state.view.y)/state.view.z}};h+=`<path data-source="${esc(ref)}" data-target="${n.id}" data-order="${i+1}" data-start-x="${c(from).x}" data-start-y="${c(from).y}" data-end-x="${c(to).x}" data-end-y="${c(to).y}" d="${curve(c(from),c(to))}"></path>`}));if(connecting)h+=`<path class="temp" d="${curve(connecting.start,connecting.current)}"></path>`;$('#links').innerHTML=h}
+/* A 1.25px stroke is unhittable with a mouse, so every connection renders a
+   second, invisible hit path sharing the identical `d`. The hit path keeps
+   `vector-effect: non-scaling-stroke`, so its 14px grab band stays 14 screen
+   pixels at any zoom. Both paths sit in `#links`, which stays
+   `pointer-events: none`: only the hit path re-enables pointer events, and
+   `#nodes` is a later sibling so nodes, ports and the toolbar are never
+   covered. Port drags and the temporary link get no hit path. */
+function links(){
+  let h='';
+  const isSelected=key=>state.selectedLinks.includes(key);
+  state.nodes.filter(isGeneration).forEach(n=>n.inputs.forEach((ref,i)=>{
+    const parsed=parseRef(ref),from=parsed?$(`[data-id="${parsed.nodeId}"] [data-result="${parsed.resultId}"] .tile-port`):$(`[data-id="${ref}"] .out`),to=$(`[data-id="${n.id}"] .in`),v=$('#viewport');
+    if(!from||!to)return;
+    const b=v.getBoundingClientRect(),c=e=>{const r=e.getBoundingClientRect();return{x:(r.left+r.width/2-b.left-state.view.x)/state.view.z,y:(r.top+r.height/2-b.top-state.view.y)/state.view.z}};
+    const path=curve(c(from),c(to)),key=linkKey(ref,n.id),sel=isSelected(key)?' selected':'',meta=`data-source="${esc(ref)}" data-target="${n.id}" data-order="${i+1}"`;
+    h+=`<path class="input-link${sel}" ${meta} data-start-x="${c(from).x}" data-start-y="${c(from).y}" data-end-x="${c(to).x}" data-end-y="${c(to).y}" d="${path}"></path>`;
+    h+=`<path class="link-hit${sel}" ${meta} d="${path}"></path>`;
+  }));
+  if(connecting)h+=`<path class="temp" d="${curve(connecting.start,connecting.current)}"></path>`;
+  $('#links').innerHTML=h;
+}
 function rects(){return state.nodes.map(n=>{const r=$(`[data-id="${n.id}"]`)?.getBoundingClientRect();return{x:n.x,y:n.y,width:n.w,height:r?r.height/state.view.z:240,type:n.type}})}
 function miniGeometry(rs,visible){const all=[...rs,visible],m=80,minX=Math.min(...all.map(r=>r.x))-m,minY=Math.min(...all.map(r=>r.y))-m,maxX=Math.max(...all.map(r=>r.x+r.width))+m,maxY=Math.max(...all.map(r=>r.y+r.height))+m,s=Math.min(160/(maxX-minX),96/(maxY-minY)),ox=(176-(maxX-minX)*s)/2-minX*s,oy=(112-(maxY-minY)*s)/2-minY*s,map=r=>({x:r.x*s+ox,y:r.y*s+oy,w:Math.max(2,r.width*s),h:Math.max(2,r.height*s)});return{s,ox,oy,nodes:rs.map(map),viewport:map(visible)}}
 function minimap(){const mapEl=$('#minimap-map');if(!mapEl)return;const v=$('#viewport').getBoundingClientRect(),visible={x:-state.view.x/state.view.z,y:-state.view.y/state.view.z,width:v.width/state.view.z,height:v.height/state.view.z},rs=rects();miniGeo=miniGeometry(rs,visible);mapEl.dataset.nodeCount=String(rs.length);if(mapEl.hidden)return;mapEl.innerHTML=miniGeo.nodes.map((r,i)=>`<rect class="mini-node ${rs[i].type}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}"/>`).join('')+`<rect class="mini-viewport" x="${miniGeo.viewport.x}" y="${miniGeo.viewport.y}" width="${miniGeo.viewport.w}" height="${miniGeo.viewport.h}"/>`}
@@ -344,19 +400,35 @@ function worldCenter(){const r=$('#viewport').getBoundingClientRect();return{x:(
 function restoreCenter(c){const r=$('#viewport').getBoundingClientRect();state.view.x=r.width/2-c.x*state.view.z;state.view.y=r.height/2-c.y*state.view.z;apply();links();minimap();save()}
 function setCollapsed(on){const c=worldCenter();$('#workspace').classList.toggle('sidebar-collapsed',on);$('#sidebar-collapse').setAttribute('aria-expanded',String(!on));$('#sidebar-collapse').setAttribute('aria-label',on?'展开项目侧栏':'收起项目侧栏');$('#sidebar-collapse').title=on?'展开项目侧栏':'收起项目侧栏';localStorage.setItem('image-hub-demo-sidebar-collapsed',String(on));requestAnimationFrame(()=>restoreCenter(c))}
 let drawerReturn=null;function setDrawer(on){if(!matchMedia('(max-width:768px)').matches)on=false;if(on)drawerReturn=document.activeElement;$('#workspace').classList.toggle('drawer-open',on);document.body.classList.toggle('drawer-open',on);$('#project-scrim').hidden=!on;$('#projects-button').setAttribute('aria-expanded',String(on));if(on)requestAnimationFrame(()=>$('#project-list .current')?.focus());else drawerReturn?.focus?.({preventScroll:true})}
-function defaultProjectName(){const names=new Set(store.projects.map(p=>p.name)),base='未命名项目';if(!names.has(base))return base;let suffix=2;while(names.has(`${base} ${suffix}`))suffix++;return `${base} ${suffix}`}function createProject(){setDrawer(false);const p={id:uid('project'),version:SCHEMA_VERSION,name:defaultProjectName(),view:{x:0,y:0,z:1},selected:[],clipboard:null,nodes:[]};store.projects.push(p);state=p;render();save()}function openRenameProjectDialog(projectId){setDrawer(false);const project=store.projects.find(p=>p.id===projectId);if(!project)return;const dialog=$('#rename-project'),input=$('#rename-project-name');dialog.dataset.projectId=project.id;input.value=project.name;dialog.showModal();requestAnimationFrame(()=>{input.focus();input.select()})}function closeRenameProjectDialog(){const dialog=$('#rename-project');if(dialog.open)dialog.close()}function clearRenameProjectDialog(){const dialog=$('#rename-project'),input=$('#rename-project-name');delete dialog.dataset.projectId;input.value='';input.setCustomValidity('')}
+function defaultProjectName(){const names=new Set(store.projects.map(p=>p.name)),base='未命名项目';if(!names.has(base))return base;let suffix=2;while(names.has(`${base} ${suffix}`))suffix++;return `${base} ${suffix}`}function createProject(){setDrawer(false);const p={id:uid('project'),version:SCHEMA_VERSION,name:defaultProjectName(),view:{x:0,y:0,z:1},selected:[],selectedLinks:[],clipboard:null,nodes:[]};store.projects.push(p);state=p;render();save()}function openRenameProjectDialog(projectId){setDrawer(false);const project=store.projects.find(p=>p.id===projectId);if(!project)return;const dialog=$('#rename-project'),input=$('#rename-project-name');dialog.dataset.projectId=project.id;input.value=project.name;dialog.showModal();requestAnimationFrame(()=>{input.focus();input.select()})}function closeRenameProjectDialog(){const dialog=$('#rename-project');if(dialog.open)dialog.close()}function clearRenameProjectDialog(){const dialog=$('#rename-project'),input=$('#rename-project-name');delete dialog.dataset.projectId;input.value='';input.setCustomValidity('')}
 
 /* ---- canvas interaction -------------------------------------------------- */
 function closeMenu(){$('#context-menu').hidden=true;context=null}
-function contextItems(n){
+function contextItems(n,link){
+  if(link)return[['移除连线','unlink']];
   if(!n)return[['上传图片','upload'],['新建生图','request'],['粘贴','paste',!state.clipboard],['适应内容','fit'],['快捷键','help']];
   if(isGeneration(n))return[['复制','copy'],['从画布移除','remove'],[n.expanded?'收起为结果简洁态':'展开编辑参数','toggle'],['从主图创建生图','derive',!primaryOf(n)?.artifactUrl]];
   return[['复制','copy'],['从画布移除','remove'],['打开大图','open'],['从此图创建生图','derive']];
 }
-function openMenu(e,n){e.preventDefault();context={id:n?.id||'',p:point(e.clientX,e.clientY)};const m=$('#context-menu');m.innerHTML=contextItems(n).map(([l,a,d])=>`<button role="menuitem" data-action="${a}" ${d?'disabled':''}>${l}</button>`).join('');m.hidden=false;const r=m.getBoundingClientRect();m.style.left=`${Math.max(8,Math.min(e.clientX,innerWidth-r.width-8))}px`;m.style.top=`${Math.max(8,Math.min(e.clientY,innerHeight-r.height-8))}px`;$('button:not(:disabled)',m)?.focus()}
+/* Right-clicking a connection selects it first, so the menu and the keyboard
+   share one target. Right-clicking blank canvas or a node keeps the existing
+   items untouched. */
+function openMenu(e,n,link){
+  e.preventDefault();
+  if(link&&!state.selectedLinks.includes(linkKey(link.source,link.target)))selectLink(link.source,link.target,false);
+  context={id:n?.id||'',p:point(e.clientX,e.clientY),link:link||null};
+  const m=$('#context-menu');
+  m.innerHTML=contextItems(n,link).map(([l,a,d])=>`<button role="menuitem" data-action="${a}" ${d?'disabled':''}>${l}</button>`).join('');
+  m.hidden=false;
+  const r=m.getBoundingClientRect();
+  m.style.left=`${Math.max(8,Math.min(e.clientX,innerWidth-r.width-8))}px`;
+  m.style.top=`${Math.max(8,Math.min(e.clientY,innerHeight-r.height-8))}px`;
+  $('button:not(:disabled)',m)?.focus();
+}
 function runAction(a){
   const n=node(context?.id),p=context?.p;
-  if(a==='upload'){$('#upload').dataset.x=p.x;$('#upload').dataset.y=p.y;$('#upload').click()}
+  if(a==='unlink')removeLinks([...state.selectedLinks]);
+  else if(a==='upload'){$('#upload').dataset.x=p.x;$('#upload').dataset.y=p.y;$('#upload').click()}
   else if(a==='request')addGeneration(p.x,p.y);
   else if(a==='paste')paste(p);
   else if(a==='fit')fit();
@@ -398,6 +470,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   const startConnect=(e,n,ref,selector)=>{e.preventDefault();e.stopPropagation();const start=portPoint(n.id,selector);if(!start)return;connecting={ref,nodeId:n.id,pointer:e.pointerId,start,current:start};document.body.classList.add('connecting');syncDragging();vp.setPointerCapture?.(e.pointerId);links()};
   vp.onpointerdown=e=>{
     closeMenu();
+    /* A connection click is consumed before any pan or drag can start, so
+       selecting a link never moves the canvas or a node. */
+    const linkHit=e.target.closest?.('.link-hit');
+    if(linkHit){e.preventDefault();if(e.button!==2)selectLink(linkHit.dataset.source,linkHit.dataset.target,e.shiftKey);return}
     const el=e.target.closest('.node'),n=el&&node(el.dataset.id);
     if(!n){if(e.button===0){e.preventDefault();pan={pointer:e.pointerId,sx:e.clientX,sy:e.clientY,x:state.view.x,y:state.view.y,moved:false};vp.setPointerCapture?.(e.pointerId);syncDragging()}return}
     const tilePort=e.target.closest('.tile-port');
@@ -438,12 +514,16 @@ document.addEventListener('DOMContentLoaded',()=>{
       } else links();
     }
     if(drag&&e.pointerId===drag.pointer){clearPointer(e.pointerId);save()}
-    if(pan&&e.pointerId===pan.pointer){if(!pan.moved){state.selected=[];render()}clearPointer(e.pointerId);save()}
+    if(pan&&e.pointerId===pan.pointer){if(!pan.moved){state.selectedLinks=[];state.selected=[];render()}clearPointer(e.pointerId);save()}
     syncDragging();
   };
   vp.onpointercancel=e=>{if(connecting&&e.pointerId===connecting.pointer){connecting=null;document.body.classList.remove('connecting')}clearPointer(e.pointerId);syncDragging()};
   vp.onselectstart=e=>{if(drag||pan||connecting)e.preventDefault()};
-  vp.oncontextmenu=e=>{const el=e.target.closest('.node');openMenu(e,el?node(el.dataset.id):null)};
+  vp.oncontextmenu=e=>{
+    const linkHit=e.target.closest?.('.link-hit');
+    if(linkHit){openMenu(e,null,{source:linkHit.dataset.source,target:linkHit.dataset.target});return}
+    const el=e.target.closest('.node');openMenu(e,el?node(el.dataset.id):null);
+  };
   $('#nodes').ondblclick=e=>{
     clearTimeout(resultClickTimer);resultClickTimer=null;
     const el=e.target.closest('.node'),n=el&&node(el.dataset.id);if(!n)return;
@@ -513,6 +593,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       if($('#workspace').classList.contains('drawer-open'))setDrawer(false);
       else if(connecting||!$('#context-menu').hidden||activePicker||!$('#shortcuts').hidden){connecting=null;closeMenu();if(activePicker){activePicker='';render()}$('#shortcuts').hidden=true;links()}
       else if($('#viewer').open)closeViewer();
+      else if(state.selectedLinks.length){state.selectedLinks=[];render()}
       else{state.selected=[];render()}
       return;
     }
@@ -527,7 +608,11 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(editable)return;
     if(e.key==='?'){e.preventDefault();$('#shortcuts').hidden=false}
     else if(meta&&e.key.toLowerCase()==='c'&&focused){e.preventDefault();copy()}
-    else if(meta&&e.key.toLowerCase()==='a'&&focused){e.preventDefault();state.selected=state.nodes.map(n=>n.id);select(state.nodes[0]?.id||'',false)}
+    else if(meta&&e.key.toLowerCase()==='a'&&focused){e.preventDefault();state.selectedLinks=[];state.selected=state.nodes.map(n=>n.id);select(state.nodes[0]?.id||'',false)}
+    /* A selected connection wins over node selection; the two modes never
+       coexist, so this single key stays unambiguous. Clicking a link leaves no
+       focusable element behind, hence the explicit `selectedLinks` test. */
+    else if(['Delete','Backspace'].includes(e.key)&&state.selectedLinks.length){e.preventDefault();removeLinks([...state.selectedLinks])}
     else if(['Delete','Backspace'].includes(e.key)&&focused&&state.selected.length){e.preventDefault();remove(state.selected)}
     else if(e.key==='0'&&focused)fit();
     else if(['+','='].includes(e.key)&&focused)zoom(state.view.z+.1,innerWidth/2,innerHeight/2);
