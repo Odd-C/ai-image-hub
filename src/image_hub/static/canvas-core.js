@@ -5,6 +5,15 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const SCHEMA_VERSION = 5;
+  const IMAGE = 'image';
+  const GENERATION = 'generation_node';
+  const LEGACY_REQUEST = 'generation_request';
+  const LEGACY_RESULT = 'generation_result';
+  const RESULT_REF_PREFIX = 'result:';
+  const DEFAULT_WIDTH = 344;
+  const MAX_COUNT = 4;
+
   function profileById(models, id) {
     return models.find(item => item.id === id) || null;
   }
@@ -19,99 +28,518 @@
     return {enabled: false, message: '当前模型不可用。请联系管理员配置或选择其他已启用模型。'};
   }
 
-  function historicalResult(item, uid) {
-    const parameters = item.parameters || {};
+  function ratioToAspect(ratio) {
+    const [width, height] = String(ratio || '4:3').split(':');
+    return `${Number(width) || 4}/${Number(height) || 3}`;
+  }
+
+  function clampCount(value, fallback = 1) {
+    return Math.max(1, Math.min(MAX_COUNT, Number(value) || Number(fallback) || 1));
+  }
+
+  /* ---- reference identity -------------------------------------------------
+     A unified node references either an uploaded/external image node id or one
+     concrete result image of another unified node. The result reference keeps
+     both the owning node and the immutable generation artifact identity. */
+
+  function resultRefId(nodeId, resultId) {
+    return `${RESULT_REF_PREFIX}${nodeId}:${resultId}`;
+  }
+
+  function parseResultRefId(ref) {
+    if (typeof ref !== 'string' || !ref.startsWith(RESULT_REF_PREFIX)) return null;
+    const rest = ref.slice(RESULT_REF_PREFIX.length);
+    const separator = rest.lastIndexOf(':');
+    if (separator <= 0 || separator === rest.length - 1) return null;
+    return {nodeId: rest.slice(0, separator), resultId: rest.slice(separator + 1)};
+  }
+
+  function uniqueRefs(refs) {
+    return [...new Set((refs || []).filter(ref => typeof ref === 'string' && ref))];
+  }
+
+  /* ---- canonical node shape ---------------------------------------------- */
+
+  function isGenerationNode(node) {
+    return Boolean(node && node.type === GENERATION);
+  }
+
+  function isImageNode(node) {
+    return Boolean(node && node.type === IMAGE);
+  }
+
+  function normalizeResult(result) {
+    const parameters = result?.parameters && typeof result.parameters === 'object' ? {...result.parameters} : {};
     return {
-      id: uid('result'), type: 'generation_result', generationId: item.id,
-      x: 180, y: 150, width: 280,
-      aspect: (parameters.ratio || '4:3').replace(':', '/'),
-      status: item.status, artifactUrl: item.artifact_url, prompt: item.prompt,
-      provider: item.provider, modelLabel: item.model_label,
-      profileId: item.profile_id || '', profileUnavailable: item.profile_available === false,
-      parameters, sentiment: item.sentiment || '',
-      canRetry: item.can_retry, parentGenerationId: item.parent_generation_id || '',
-      createdAt: item.created_at || '', inputCount: item.input_count || 0,
+      id: result?.id || '',
+      generationId: result?.generationId || '',
+      artifactUrl: result?.artifactUrl || '',
+      status: result?.status || 'queued',
+      error: result?.error || '',
+      canRetry: Boolean(result?.canRetry),
+      sentiment: result?.sentiment || '',
+      aspect: result?.aspect || ratioToAspect(parameters.ratio),
+      provider: result?.provider || '',
+      modelLabel: result?.modelLabel || '',
+      prompt: result?.prompt || '',
+      profileId: result?.profileId || '',
+      parameters,
+      createdAt: result?.createdAt || '',
     };
   }
 
-  function historyAction(nodes, item, action, uid) {
-    if (action !== 'locate' && action !== 'continue') throw new Error(`Unsupported history action: ${action}`);
-    let result = nodes.find(node => node.type === 'generation_result' && node.generationId === item.id);
-    let createdResult = false;
-    if (!result) { result = historicalResult(item, uid); nodes.push(result); createdResult = true; }
-    if (action === 'locate') return {result, request: null, focusId: result.id, createdResult};
-    const parameters = item.parameters || {};
+  function normalizeRequest(request) {
     return {
-      result,
-      request: {
-        prompt: item.prompt, profileId: item.profile_id || '', ratio: parameters.ratio,
-        resolution: parameters.resolution, quality: parameters.quality, inputId: result.id,
-        parentGenerationId: item.id,
-      },
-      focusId: '', createdResult,
+      prompt: request?.prompt || '',
+      profileId: request?.profileId || '',
+      provider: request?.provider || '',
+      ratio: request?.ratio || '1:1',
+      resolution: request?.resolution || '2K',
+      quality: request?.quality || 'standard',
+      count: clampCount(request?.count),
+      orderedInputIds: uniqueRefs(request?.orderedInputIds),
     };
   }
 
-  function firstMissingLocalInput(nodes, request, hasLocalFile) {
-    const byId = new Map(nodes.map(node => [node.id, node]));
-    for (const id of request.orderedInputIds || []) {
-      const node = byId.get(id);
-      if (node?.type === 'image' && node.localOnly && !hasLocalFile(id)) return node;
+  function normalizeBatch(batch, options = {}) {
+    if (!batch || typeof batch !== 'object') return null;
+    const results = Array.isArray(batch.results) ? batch.results.map(normalizeResult) : [];
+    if (!results.length) return null;
+    const normalized = {
+      id: batch.id || '',
+      createdAt: batch.createdAt || '',
+      parentGenerationId: batch.parentGenerationId || '',
+      request: normalizeRequest(batch.request),
+      results,
+    };
+    if (options.withAttemptState) {
+      normalized.settled = Boolean(batch.settled);
+      normalized.promoted = Boolean(batch.promoted);
+    }
+    return normalized;
+  }
+
+  function normalizeGenerationNode(node) {
+    const normalized = {
+      ...node,
+      type: GENERATION,
+      x: Number(node?.x) || 0,
+      y: Number(node?.y) || 0,
+      width: Number(node?.width) || DEFAULT_WIDTH,
+      expanded: node?.expanded !== false,
+      prompt: node?.prompt || '',
+      provider: node?.provider || '',
+      profileId: node?.profileId || '',
+      ratio: node?.ratio || '1:1',
+      resolution: node?.resolution || '2K',
+      quality: node?.quality || 'standard',
+      count: clampCount(node?.count),
+      orderedInputIds: uniqueRefs(node?.orderedInputIds || node?.referenceOrder),
+      parentGenerationId: node?.parentGenerationId || '',
+      primaryResultId: node?.primaryResultId || '',
+      error: node?.error || '',
+      contentMode: node?.contentMode || 'created',
+      profileUnavailable: Boolean(node?.profileUnavailable),
+      submitting: false,
+      uploading: false,
+      activeBatch: normalizeBatch(node?.activeBatch),
+      attempt: normalizeBatch(node?.attempt, {withAttemptState: true}),
+    };
+    if (normalized.attempt) {
+      const results = normalized.attempt.results;
+      normalized.attempt.settled = results.every(result => !['queued', 'running'].includes(result.status));
+    }
+    normalized.dirty = isDirty(normalized);
+    return normalized;
+  }
+
+  function batchResults(batch) {
+    return Array.isArray(batch?.results) ? batch.results : [];
+  }
+
+  function nodeResults(node) {
+    return [...batchResults(node?.activeBatch), ...batchResults(node?.attempt)];
+  }
+
+  function findResult(nodes, generationId) {
+    if (!generationId) return null;
+    for (const node of nodes || []) {
+      if (!isGenerationNode(node)) continue;
+      const result = nodeResults(node).find(item => item.generationId === generationId);
+      if (result) return {node, result};
     }
     return null;
   }
 
+  function requestSnapshot(node) {
+    return normalizeRequest({
+      prompt: node?.prompt || '',
+      profileId: node?.profileId || '',
+      provider: node?.provider || '',
+      ratio: node?.ratio || '',
+      resolution: node?.resolution || '',
+      quality: node?.quality || '',
+      count: node?.count,
+      orderedInputIds: node?.orderedInputIds,
+    });
+  }
+
+  function activeRequest(node) {
+    return node?.attempt?.request || node?.activeBatch?.request || null;
+  }
+
+  function isDirty(node) {
+    const request = activeRequest(node);
+    if (!request || !isGenerationNode(node)) return false;
+    const current = requestSnapshot(node);
+    return current.prompt !== request.prompt
+      || current.profileId !== request.profileId
+      || current.provider !== request.provider
+      || current.ratio !== request.ratio
+      || current.resolution !== request.resolution
+      || current.quality !== request.quality
+      || current.count !== request.count
+      || current.orderedInputIds.join('|') !== request.orderedInputIds.join('|');
+  }
+
+  function primaryResult(node) {
+    const results = batchResults(node?.activeBatch);
+    if (!results.length) return null;
+    return results.find(result => result.id === node.primaryResultId)
+      || results.find(result => result.status === 'succeeded')
+      || results[0];
+  }
+
+  function primaryGenerationId(node) {
+    return primaryResult(node)?.generationId || node?.parentGenerationId || '';
+  }
+
+  function nodeStatus(node) {
+    if (node?.submitting || (node?.attempt && !node.attempt.settled)) return 'processing';
+    const results = batchResults(node?.activeBatch);
+    if (!results.length) return node?.error ? 'failed' : 'empty';
+    const succeeded = results.filter(result => result.status === 'succeeded').length;
+    if (succeeded && succeeded === results.length) return 'succeeded';
+    if (succeeded) return 'partial';
+    if (results.some(result => result.status === 'recovery_required')) return 'recovery_required';
+    return 'failed';
+  }
+
+  function batchProgress(node) {
+    const attempt = node?.attempt;
+    const results = batchResults(attempt);
+    if (!attempt || !results.length) return null;
+    const done = results.filter(result => !['queued', 'running'].includes(result.status)).length;
+    return {done, total: results.length, settled: Boolean(attempt.settled)};
+  }
+
+  function attemptError(node) {
+    const attempt = node?.attempt;
+    if (!attempt || !attempt.settled || attempt.promoted) return '';
+    return batchResults(attempt).map(result => result.error).find(Boolean) || '';
+  }
+
+  /* ---- references --------------------------------------------------------- */
+
+  function resolveInputRef(nodes, ref) {
+    const parsed = parseResultRefId(ref);
+    if (parsed) {
+      const node = (nodes || []).find(item => item.id === parsed.nodeId);
+      if (!isGenerationNode(node)) return null;
+      const result = nodeResults(node).find(item => item.id === parsed.resultId);
+      if (!result || !result.artifactUrl) return null;
+      return {id: ref, kind: 'result', node, result, src: result.artifactUrl, name: `${result.modelLabel || '生成结果'} · ${result.parameters?.ratio || ''}`.trim(), generationId: result.generationId || '', localOnly: false};
+    }
+    const node = (nodes || []).find(item => item.id === ref);
+    if (!isImageNode(node)) return null;
+    return {id: ref, kind: 'image', node, result: null, src: node.src || '', name: node.name || '参考图片', generationId: '', localOnly: Boolean(node.localOnly)};
+  }
+
+  function resolveInputRefs(nodes, node) {
+    return (node?.orderedInputIds || []).map(ref => ({ref, source: resolveInputRef(nodes, ref)}));
+  }
+
+  function firstMissingLocalInput(nodes, node, hasLocalFile) {
+    for (const ref of node?.orderedInputIds || []) {
+      const source = resolveInputRef(nodes, ref);
+      if (source?.kind === 'image' && source.localOnly && !hasLocalFile(ref)) return source.node;
+    }
+    return null;
+  }
+
+  /* ---- legacy canvas migration ------------------------------------------- */
+
+  function legacyResultToResult(result) {
+    return normalizeResult({
+      id: result.id,
+      generationId: result.generationId || '',
+      artifactUrl: result.artifactUrl || '',
+      status: result.status || 'queued',
+      error: result.error || '',
+      canRetry: result.canRetry,
+      sentiment: result.sentiment || '',
+      aspect: result.aspect || ratioToAspect(result.parameters?.ratio),
+      provider: result.provider || '',
+      modelLabel: result.modelLabel || '',
+      prompt: result.prompt || '',
+      profileId: result.profileId || '',
+      parameters: result.parameters,
+      createdAt: result.createdAt || '',
+    });
+  }
+
+  function batchRequestFromNode(node, count, orderedInputIds) {
+    return normalizeRequest({
+      prompt: node?.prompt,
+      profileId: node?.profileId,
+      provider: node?.provider,
+      ratio: node?.ratio,
+      resolution: node?.resolution,
+      quality: node?.quality,
+      count,
+      orderedInputIds,
+    });
+  }
+
+  /* Idempotent: unified nodes pass through untouched, legacy request/result
+     presentation nodes merge exactly once. */
+  function migrateCanvasNodes(nodes) {
+    const list = (Array.isArray(nodes) ? nodes : []).filter(node => node && typeof node === 'object');
+    const legacy = list.filter(node => node.type === LEGACY_REQUEST || node.type === LEGACY_RESULT);
+    if (!legacy.length) return {nodes: list.map(node => ({...node})), migrated: false};
+
+    const plan = new Map();
+    list.forEach(node => { if (node.type === LEGACY_REQUEST) plan.set(node.id, {request: node, results: []}); });
+    const orphans = [];
+    list.forEach(node => {
+      if (node.type !== LEGACY_RESULT) return;
+      const owner = node.requestId ? plan.get(node.requestId) : null;
+      if (owner) owner.results.push(node); else orphans.push(node);
+    });
+    orphans.forEach((result, index) => plan.set(`generation-${result.id}`, {
+      request: null,
+      results: [result],
+      fallback: {x: 180 + (index % 3) * 300, y: 150 + Math.floor(index / 3) * 380},
+    }));
+
+    const refByLegacyResultId = new Map();
+    plan.forEach((entry, nodeId) => entry.results.forEach(result => refByLegacyResultId.set(result.id, resultRefId(nodeId, result.id))));
+    const remapRefs = refs => uniqueRefs((refs || []).map(ref => refByLegacyResultId.get(ref) || ref));
+
+    const migratedNodes = [];
+    list.forEach(node => {
+      if (node.type === LEGACY_RESULT) return;
+      if (node.type === LEGACY_REQUEST) {
+        const entry = plan.get(node.id) || {request: node, results: []};
+        const orderedInputIds = remapRefs(node.orderedInputIds || node.referenceOrder);
+        const results = entry.results.map(legacyResultToResult);
+        const count = results.length ? clampCount(node.count, results.length) : clampCount(node.count);
+        migratedNodes.push(normalizeGenerationNode({
+          ...node,
+          type: GENERATION,
+          orderedInputIds,
+          count,
+          expanded: results.length ? false : node.expanded !== false,
+          contentMode: 'migrated',
+          activeBatch: results.length ? {
+            id: `batch-${node.id}`,
+            createdAt: '',
+            parentGenerationId: node.parentGenerationId || '',
+            request: batchRequestFromNode(node, count, orderedInputIds),
+            results,
+          } : null,
+          primaryResultId: results.length ? (results.find(result => result.status === 'succeeded') || results[0]).id : '',
+        }));
+        return;
+      }
+      migratedNodes.push({...node});
+    });
+
+    orphans.forEach((result, index) => {
+      const nodeId = `generation-${result.id}`;
+      const entry = plan.get(nodeId);
+      const single = legacyResultToResult(result);
+      const request = normalizeRequest({
+        prompt: single.prompt,
+        profileId: single.profileId,
+        provider: single.provider,
+        ratio: single.parameters.ratio || '4:3',
+        resolution: single.parameters.resolution || '2K',
+        quality: single.parameters.quality || 'standard',
+        count: 1,
+        orderedInputIds: [],
+      });
+      migratedNodes.push(normalizeGenerationNode({
+        id: nodeId,
+        type: GENERATION,
+        x: entry.fallback.x,
+        y: entry.fallback.y,
+        width: DEFAULT_WIDTH,
+        expanded: false,
+        contentMode: 'historical',
+        ...request,
+        parentGenerationId: single.generationId && result.parentGenerationId ? result.parentGenerationId : '',
+        activeBatch: {id: `batch-${nodeId}`, createdAt: single.createdAt, parentGenerationId: result.parentGenerationId || '', request, results: [single]},
+        primaryResultId: single.id,
+        profileUnavailable: Boolean(result.profileUnavailable),
+      }));
+    });
+
+    return {nodes: migratedNodes, migrated: true};
+  }
+
+  /* ---- history ----------------------------------------------------------- */
+
+  function historicalNode(item, uid) {
+    const parameters = item.parameters || {};
+    const request = normalizeRequest({
+      prompt: item.prompt,
+      profileId: item.profile_id,
+      provider: item.provider,
+      ratio: parameters.ratio || '4:3',
+      resolution: parameters.resolution || '2K',
+      quality: parameters.quality || 'standard',
+      count: 1,
+      orderedInputIds: [],
+    });
+    const result = normalizeResult({
+      id: uid('result'),
+      generationId: item.id,
+      artifactUrl: item.artifact_url,
+      status: item.status,
+      canRetry: item.can_retry,
+      sentiment: item.sentiment || '',
+      aspect: ratioToAspect(parameters.ratio),
+      provider: item.provider,
+      modelLabel: item.model_label,
+      prompt: item.prompt,
+      profileId: item.profile_id || '',
+      parameters,
+      createdAt: item.created_at || '',
+    });
+    return normalizeGenerationNode({
+      id: uid('generation'),
+      type: GENERATION,
+      x: 180,
+      y: 150,
+      width: DEFAULT_WIDTH,
+      expanded: false,
+      contentMode: 'historical',
+      ...request,
+      profileUnavailable: item.profile_available === false,
+      parentGenerationId: item.parent_generation_id || '',
+      activeBatch: {id: uid('batch'), createdAt: item.created_at || '', parentGenerationId: item.parent_generation_id || '', request, results: [result]},
+      primaryResultId: result.id,
+    });
+  }
+
+  function historyAction(nodes, item, action, uid) {
+    if (action !== 'locate' && action !== 'continue') throw new Error(`Unsupported history action: ${action}`);
+    let found = findResult(nodes, item.id);
+    let createdNode = false;
+    if (!found) {
+      const node = historicalNode(item, uid);
+      nodes.push(node);
+      found = {node, result: node.activeBatch.results[0]};
+      createdNode = true;
+    }
+    const resultRef = resultRefId(found.node.id, found.result.id);
+    if (action === 'locate') {
+      return {node: found.node, result: found.result, resultRef, createdNode, focusId: found.node.id};
+    }
+    const parameters = item.parameters || {};
+    return {
+      node: found.node,
+      result: found.result,
+      resultRef,
+      createdNode,
+      focusId: '',
+      create: {
+        x: found.node.x + found.node.width + 120,
+        y: found.node.y,
+        prompt: item.prompt,
+        provider: item.provider,
+        profileId: item.profile_id || '',
+        ratio: parameters.ratio || found.node.ratio,
+        resolution: parameters.resolution || found.node.resolution,
+        quality: parameters.quality || found.node.quality,
+        count: 1,
+        orderedInputIds: [resultRef],
+        parentGenerationId: item.id,
+        expanded: true,
+      },
+    };
+  }
+
+  /* ---- restore, clone, delete -------------------------------------------- */
+
   function restoreCanvasNodes(nodes) {
-    return nodes.map(node => {
+    return (Array.isArray(nodes) ? nodes : []).map(node => {
+      if (!node || typeof node !== 'object') return node;
+      if (node.type === IMAGE) {
+        const restored = {...node};
+        if (restored.localOnly) { restored.src = ''; restored.needsReselect = true; }
+        return restored;
+      }
+      if (node.type === GENERATION) return normalizeGenerationNode(node);
       const restored = {...node};
-      if (restored.type === 'generation_request') restored.orderedInputIds = [...(restored.orderedInputIds || restored.referenceOrder || [])];
-      if (restored.type === 'image' && restored.localOnly) { restored.src = ''; restored.needsReselect = true; }
+      if (restored.type === LEGACY_REQUEST) restored.orderedInputIds = [...(restored.orderedInputIds || restored.referenceOrder || [])];
       return restored;
     });
   }
 
   function isPresentationNode(node) {
-    return Boolean(node && ['image', 'generation_request', 'generation_result'].includes(node.type));
+    return Boolean(node && [IMAGE, GENERATION, LEGACY_REQUEST, LEGACY_RESULT].includes(node.type));
+  }
+
+  function refOwnerNodeId(ref) {
+    const parsed = parseResultRefId(ref);
+    return parsed ? parsed.nodeId : ref;
   }
 
   function clonePresentationNodes(nodes, selectedIds, uid, offset = {x: 36, y: 36}) {
     const selected = new Set(selectedIds);
     const sourceById = new Map(nodes.map(node => [node.id, node]));
     const copied = nodes.filter(node => selected.has(node.id) && isPresentationNode(node));
-    const idMap = new Map(copied.map(node => [node.id, uid(node.type === 'generation_request' ? 'request' : node.type === 'image' ? 'image' : 'result')]));
+    const idMap = new Map(copied.map(node => [node.id, uid(node.type === IMAGE ? 'image' : 'generation')]));
     const clones = copied.map(node => {
       const clone = {...node, id: idMap.get(node.id), x: Number(node.x || 0) + offset.x, y: Number(node.y || 0) + offset.y};
-      delete clone.generationId;
-      delete clone.canRetry;
-      delete clone.sentiment;
-      delete clone.uploading;
-      if (clone.type === 'generation_result') {
-        clone.presentationProxy = true;
-        const oldRequest = node.requestId;
-        clone.requestId = idMap.get(oldRequest) || (sourceById.get(oldRequest)?.type === 'generation_request' ? oldRequest : '');
+      if (clone.type === IMAGE) {
+        clone.needsReselect = Boolean(node.needsReselect);
+        return clone;
       }
-      if (clone.type === 'generation_request') {
-        clone.submitting = false;
-        clone.orderedInputIds = (node.orderedInputIds || []).flatMap(id => {
-          const source = sourceById.get(id);
-          if (!source || !['image', 'generation_result'].includes(source.type)) return [];
-          return [idMap.get(id) || id];
-        });
-      }
-      return clone;
+      /* A duplicate carries the recipe, never fabricated generation evidence. */
+      clone.orderedInputIds = uniqueRefs(node.orderedInputIds).flatMap(ref => {
+        const ownerId = refOwnerNodeId(ref);
+        const owner = sourceById.get(ownerId);
+        if (parseResultRefId(ref) && selected.has(ownerId)) return [];
+        if (!parseResultRefId(ref) && owner && !selected.has(ownerId)) return [ref];
+        return [idMap.get(ownerId) || ref];
+      });
+      clone.expanded = true;
+      clone.submitting = false;
+      clone.uploading = false;
+      clone.error = '';
+      clone.dirty = false;
+      clone.activeBatch = null;
+      clone.attempt = null;
+      clone.primaryResultId = '';
+      clone.contentMode = 'created';
+      return normalizeGenerationNode(clone);
     });
     return {clones, idMap: Object.fromEntries(idMap)};
   }
 
   function removePresentationNodes(nodes, selectedIds) {
     const removed = new Set(selectedIds);
-    const kept = nodes.filter(node => !removed.has(node.id));
-    kept.forEach(node => {
-      if (node.type === 'generation_request') node.orderedInputIds = (node.orderedInputIds || []).filter(id => !removed.has(id));
-      if (node.type === 'generation_result' && removed.has(node.requestId)) node.requestId = '';
+    return nodes.filter(node => !removed.has(node.id)).map(node => {
+      if (node.type === IMAGE) return node;
+      if (node.type !== GENERATION && node.type !== LEGACY_REQUEST) return node;
+      return {...node, orderedInputIds: (node.orderedInputIds || []).filter(ref => !removed.has(refOwnerNodeId(ref)))};
     });
-    return kept;
   }
+
+  /* ---- geometry ---------------------------------------------------------- */
 
   function rectCenterToWorld(elementRect, viewportRect, viewport) {
     return {
@@ -151,9 +579,15 @@
   }
 
   return {
-    profileById, chooseRequestProfile, requestAvailability, historyAction,
-    restoreCanvasNodes, firstMissingLocalInput, isPresentationNode,
-    clonePresentationNodes, removePresentationNodes, rectCenterToWorld,
-    visibleWorld, minimapGeometry, minimapPointToWorld, isEditableTarget,
+    SCHEMA_VERSION, IMAGE, GENERATION, LEGACY_REQUEST, LEGACY_RESULT, DEFAULT_WIDTH, MAX_COUNT,
+    profileById, chooseRequestProfile, requestAvailability, ratioToAspect, clampCount,
+    resultRefId, parseResultRefId, uniqueRefs,
+    isGenerationNode, isImageNode, normalizeGenerationNode, normalizeBatch, normalizeResult, normalizeRequest,
+    batchResults, nodeResults, findResult, requestSnapshot, activeRequest, isDirty,
+    primaryResult, primaryGenerationId, nodeStatus, batchProgress, attemptError,
+    resolveInputRef, resolveInputRefs, firstMissingLocalInput,
+    migrateCanvasNodes, historyAction, historicalNode,
+    restoreCanvasNodes, isPresentationNode, clonePresentationNodes, removePresentationNodes,
+    rectCenterToWorld, visibleWorld, minimapGeometry, minimapPointToWorld, isEditableTarget,
   };
 });

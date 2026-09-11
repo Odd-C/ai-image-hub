@@ -21,8 +21,9 @@ async function dropTransfer(page, selector, entries, clientX, clientY) {
 }
 async function endpointDeltas(page) {
   return page.evaluate(() => [...document.querySelectorAll('#links path[data-end-x]')].map(path => {
-    const source = document.querySelector(`[data-id="${path.classList.contains('derived') ? 'request-a' : 'landscape'}"] ${path.classList.contains('derived') ? '.request-out' : '.out'}`);
-    const target = document.querySelector(`[data-id="${path.classList.contains('derived') ? 'result-a' : 'request-a'}"] ${path.classList.contains('derived') ? '.derived-in' : '.in'}`);
+    const ref = path.dataset.source, parsed = ref.startsWith('result:') ? ref.slice(7).split(':') : null;
+    const source = parsed ? document.querySelector(`[data-id="${parsed[0]}"] [data-result="${parsed[1]}"] .tile-port`) : document.querySelector(`[data-id="${ref}"] .out`);
+    const target = document.querySelector(`[data-id="${path.dataset.target}"] .in`);
     const viewport = document.querySelector('#viewport').getBoundingClientRect();
     const world = document.querySelector('#world');
     const matrix = new DOMMatrix(getComputedStyle(world).transform);
@@ -44,8 +45,8 @@ for (const size of sizes) {
     await page.setViewportSize(size);
     await page.goto(DEMO_URL, {waitUntil: 'networkidle'});
     await expect(page.locator('#minimap-map')).toHaveAttribute('data-node-count', '3');
-    for(const control of await page.locator('[data-id="request-a"] .request-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.width<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.width<=768?36:28)}
-    for(const expanded of [true,false]){const nodeBox=await page.locator('[data-id="request-a"]').boundingBox(),buttons=await page.locator('[data-id="request-a"] .request-actions button').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,cy:r.y+r.height/2}}));expect(Math.abs(buttons[0].cy-buttons[1].cy)).toBeLessThanOrEqual(.5);buttons.forEach(b=>{expect(b.x).toBeGreaterThanOrEqual(nodeBox.x-.75);expect(b.y).toBeGreaterThanOrEqual(nodeBox.y-.75);expect(b.x+b.width).toBeLessThanOrEqual(nodeBox.x+nodeBox.width+.75);expect(b.y+b.height).toBeLessThanOrEqual(nodeBox.y+nodeBox.height+.75)});expect(buttons[0].x+buttons[0].width).toBeLessThanOrEqual(buttons[1].x);if(expanded)await page.locator('[data-id="request-a"] [data-toggle]').click();}
+    for(const control of await page.locator('[data-id="generation-a"] .node-header-actions button').all()){const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(size.width<=768?36:28);expect(b.height).toBeGreaterThanOrEqual(size.width<=768?36:28)}
+    for(const expanded of [true,false]){const nodeBox=await page.locator('[data-id="generation-a"]').boundingBox(),buttons=await page.locator('[data-id="generation-a"] .node-header-actions button').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,cy:r.y+r.height/2}}));expect(Math.abs(buttons[0].cy-buttons[1].cy)).toBeLessThanOrEqual(.5);buttons.forEach(b=>{expect(b.x).toBeGreaterThanOrEqual(nodeBox.x-.75);expect(b.y).toBeGreaterThanOrEqual(nodeBox.y-.75);expect(b.x+b.width).toBeLessThanOrEqual(nodeBox.x+nodeBox.width+.75);expect(b.y+b.height).toBeLessThanOrEqual(nodeBox.y+nodeBox.height+.75)});expect(buttons[0].x+buttons[0].width).toBeLessThanOrEqual(buttons[1].x);if(expanded)await page.locator('[data-id="generation-a"] [data-toggle]').click();}
     await expect(page.locator('#minimap-map .mini-viewport')).toHaveCount(size.width <= 420 ? 0 : 1);
     if (size.width <= 420) {
       await expect(page.locator('#minimap-toggle')).toHaveAttribute('aria-expanded', 'false');
@@ -79,7 +80,7 @@ test('external image drop paste validation and reload lifecycle', async ({page})
   await dispatchPaste(page,'#viewport',[fileEntry(portrait,'clipboard-portrait.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(initial+2);added=page.locator('article.node.image').nth(initial+1);position=await added.evaluate(node=>({x:parseFloat(node.style.left),y:parseFloat(node.style.top)}));expect(Math.abs(position.x-expectedPaste.x)).toBeLessThanOrEqual(.001);expect(Math.abs(position.y-expectedPaste.y)).toBeLessThanOrEqual(.001);
   const fidelity=await page.locator('article.node.image').evaluateAll(nodes=>nodes.slice(-2).map(node=>{const image=node.querySelector('img');return{ratio:image.naturalWidth/image.naturalHeight,fit:getComputedStyle(image).objectFit}}));expect(fidelity[0].ratio).toBeCloseTo(3,4);expect(fidelity[1].ratio).toBeCloseTo(1/3,4);fidelity.forEach(item=>expect(item.fit).toBe('contain'));
   await page.locator('article.node.image').nth(initial).click();await page.keyboard.press('Control+c');await dispatchPaste(page,'[data-id="landscape"]',[fileEntry(portrait,'system-image-wins.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(initial+3);await viewport.focus();await dispatchPaste(page,'#viewport',[]);await expect(page.locator('article.node.image')).toHaveCount(initial+4);
-  const textarea=page.locator('[data-id="request-a"] textarea');await textarea.focus();const before=await page.locator('article.node.image').count();expect(await dispatchPaste(page,'[data-id="request-a"] textarea',[{kind:'text',mimeType:'text/plain',value:'正常提示词粘贴'}])).toBeTruthy();await expect(page.locator('article.node.image')).toHaveCount(before);
+  const textarea=page.locator('[data-id="generation-a"] textarea');await textarea.focus();const before=await page.locator('article.node.image').count();expect(await dispatchPaste(page,'[data-id="generation-a"] textarea',[{kind:'text',mimeType:'text/plain',value:'正常提示词粘贴'}])).toBeTruthy();await expect(page.locator('article.node.image')).toHaveCount(before);
   await viewport.focus();await dropTransfer(page,'#viewport',[fileEntry(Buffer.from('<svg/>'),'bad.svg','image/svg+xml')],drop.x,drop.y);await expect(page.locator('#toast')).toContainText('仅支持 PNG、JPEG 和 WebP');await expect(page.locator('article.node.image')).toHaveCount(before);
   await dispatchPaste(page,'#viewport',[fileEntry(landscape,'multi-landscape.png','image/png'),fileEntry(portrait,'multi-portrait.png','image/png')]);await expect(page.locator('article.node.image')).toHaveCount(before+2);const pair=await page.locator('article.node.image').evaluateAll(nodes=>nodes.slice(-2).map(node=>({x:parseFloat(node.style.left),y:parseFloat(node.style.top),ratio:node.querySelector('img').naturalWidth/node.querySelector('img').naturalHeight})));expect(pair[1].x-pair[0].x).toBe(32);expect(pair[1].y-pair[0].y).toBe(32);expect(pair[0].ratio).toBeCloseTo(3,4);expect(pair[1].ratio).toBeCloseTo(1/3,4);
   const persisted=await page.locator('article.node.image').count();await page.reload({waitUntil:'networkidle'});await expect(page.locator('article.node.image')).toHaveCount(persisted);await expect(page.locator('.upload-missing')).toHaveCount(persisted-2);
@@ -95,15 +96,15 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
   deltas.forEach(delta => { expect(delta.start).toBeLessThanOrEqual(1.5); expect(delta.end).toBeLessThanOrEqual(1.5); });
 
   const image = page.locator('[data-id="landscape"]');
-  const request = page.locator('[data-id="request-a"]');
+  const request = page.locator('[data-id="generation-a"]');
   await image.click();
   await request.locator('header').click({modifiers:['Shift']});
   await expect(image).toHaveAttribute('aria-selected', 'true');
   await expect(request).toHaveAttribute('aria-selected', 'true');
-  const before = await page.evaluate(() => ['landscape','request-a'].map(id => { const n=document.querySelector(`[data-id="${id}"]`); return [parseFloat(n.style.left),parseFloat(n.style.top)]; }));
+  const before = await page.evaluate(() => ['landscape','generation-a'].map(id => { const n=document.querySelector(`[data-id="${id}"]`); return [parseFloat(n.style.left),parseFloat(n.style.top)]; }));
   const box = await image.boundingBox();
   await page.mouse.move(box.x+80,box.y+40); await page.mouse.down(); await page.mouse.move(box.x+130,box.y+80); await page.mouse.up();
-  const after = await page.evaluate(() => ['landscape','request-a'].map(id => { const n=document.querySelector(`[data-id="${id}"]`); return [parseFloat(n.style.left),parseFloat(n.style.top)]; }));
+  const after = await page.evaluate(() => ['landscape','generation-a'].map(id => { const n=document.querySelector(`[data-id="${id}"]`); return [parseFloat(n.style.left),parseFloat(n.style.top)]; }));
   expect(after[0][0]-before[0][0]).toBeCloseTo(after[1][0]-before[1][0], 1);
   expect(await page.locator('.node').count()).toBe(3);
   deltas = await endpointDeltas(page); deltas.forEach(delta => { expect(delta.start).toBeLessThanOrEqual(1.5); expect(delta.end).toBeLessThanOrEqual(1.5); });
@@ -114,7 +115,7 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
   deltas = await endpointDeltas(page); deltas.forEach(delta => { expect(delta.start).toBeLessThanOrEqual(1.5); expect(delta.end).toBeLessThanOrEqual(1.5); });
   const toggle=request.locator('[data-toggle]'), remove=request.locator('[data-delete]');
   for(const control of [toggle,remove]){await expect(control).toHaveAttribute('aria-label',/.+/);await expect(control).toHaveAttribute('title',/.+/);await expect(control.locator('svg')).toHaveCount(1);const b=await control.boundingBox();expect(b.width).toBeGreaterThanOrEqual(28);expect(b.height).toBeGreaterThanOrEqual(28)}
-  const nodeCoordinates=async()=>page.evaluate(()=>JSON.parse(localStorage.getItem('image-hub-demo-v4')).projects.find(p=>p.id==='spring').nodes.map(n=>[n.id,n.x,n.y]));
+  const nodeCoordinates=async()=>page.evaluate(()=>JSON.parse(localStorage.getItem('image-hub-demo-v5')).projects.find(p=>p.id==='spring').nodes.map(n=>[n.id,n.x,n.y]));
   const coordinatesBefore=await nodeCoordinates(), expandedBox=await request.boundingBox(), expandedPort=await request.locator('.in').boundingBox();
   await toggle.click();await page.waitForTimeout(80);await expect(toggle).toHaveAttribute('aria-expanded','false');const collapsedBox=await request.boundingBox(),collapsedPort=await request.locator('.in').boundingBox();expect(collapsedBox.height).toBeLessThan(expandedBox.height);expect(collapsedPort.y).not.toBe(expandedPort.y);expect(await nodeCoordinates()).toEqual(coordinatesBefore);deltas=await endpointDeltas(page);deltas.forEach(delta=>expect(delta.end).toBeLessThanOrEqual(1.5));
   for(let i=0;i<3;i++){await toggle.click();await toggle.click()}await toggle.click();await page.waitForTimeout(80);expect(await nodeCoordinates()).toEqual(coordinatesBefore);
@@ -122,14 +123,14 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
 
   const fit = await page.locator('[data-id="landscape"] .frame').evaluate(el => { const img=el.querySelector('img'),r=img.getBoundingClientRect();return{fit:getComputedStyle(img).objectFit,ratio:r.width/r.height,intrinsic:img.naturalWidth/img.naturalHeight}; });
   expect(fit.fit).toBe('contain'); expect(fit.intrinsic).toBeCloseTo(3, 4); expect(fit.ratio).toBeCloseTo(3, 2);
-  const portrait = await page.locator('[data-id="result-a"] .frame img').evaluate(img => ({fit:getComputedStyle(img).objectFit,intrinsic:img.naturalWidth/img.naturalHeight}));
+  const portrait = await page.locator('[data-id="generation-a"] .result-tile img').evaluate(img => ({fit:getComputedStyle(img).objectFit,intrinsic:img.naturalWidth/img.naturalHeight}));
   expect(portrait.fit).toBe('contain'); expect(portrait.intrinsic).toBeCloseTo(1/3, 4);
 
   await request.locator('[data-model-trigger]').click();
-  await expect(request.locator('.model-menu [role="group"]')).toHaveCount(3);
+  await expect(request.locator('.provider-chips button')).toHaveCount(3);
   await expect(request.locator('[data-profile="libtv:legacy"]')).toBeDisabled();
   await request.locator('[data-profile="lovart:nano"]').click();
-  await expect(request.locator('[data-field="combo"]')).toHaveValue('3:4|2K');
+  await expect(request.locator('[data-image-trigger] span')).toHaveText('3:4 · 2K');
 
   const viewportBox=await page.locator('#viewport').boundingBox();await page.locator('#viewport').click({button:'right',position:{x:viewportBox.width-20,y:Math.min(680,viewportBox.height-20)}, force:true});
   const menu = page.locator('#context-menu'); await expect(menu).toBeVisible();
@@ -138,7 +139,7 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
   await page.keyboard.press('?'); await expect(page.locator('#shortcuts')).toBeVisible(); await page.keyboard.press('Escape');
 
   await image.focus();await image.dblclick();const viewer=page.locator('#viewer'),viewerImage=viewer.locator('img'),zoomLabel=page.locator('#viewer-zoom');await expect(viewer).toBeVisible();await expect(viewerImage).toHaveCSS('object-fit','contain');await expect(zoomLabel).not.toHaveText('100%');const fitBox=await viewerImage.boundingBox(),stageBox=await viewer.locator('.viewer-stage').boundingBox();expect(fitBox.width).toBeLessThanOrEqual(stageBox.width+1);expect(fitBox.height).toBeLessThanOrEqual(stageBox.height+1);await page.locator('#viewer-actual').click();await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('+');expect(parseInt(await zoomLabel.textContent())).toBeGreaterThan(100);await page.keyboard.press('-');await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('0');await expect(zoomLabel).not.toHaveText('100%');await viewer.locator('.viewer-stage').dispatchEvent('wheel',{deltaY:-100,clientX:stageBox.x+stageBox.width*.7,clientY:stageBox.y+stageBox.height*.5});const zoomed=parseInt(await zoomLabel.textContent());expect(zoomed).toBeGreaterThan(parseInt((await zoomLabel.textContent())||'0')/1.13);await page.keyboard.press('1');await expect(zoomLabel).toHaveText('100%');await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(image).toBeFocused();
-  await page.locator('[data-id="result-a"]').click(); await expect(page.locator('[data-id="result-a"] .details')).toContainText('生成详情');
+  await page.locator('[data-id="generation-a"]').click(); await expect(page.locator('[data-id="generation-a"] .generation-editor textarea')).toHaveValue(/保留产品比例/);
 
   const oldView = await page.evaluate(() => getComputedStyle(document.querySelector('#world')).transform);
   await page.locator('#minimap-map').click({position:{x:20,y:20}});
@@ -147,30 +148,30 @@ test('geometry selection shortcuts picker context viewer and isolation', async (
 
   await page.locator('#project-sidebar [data-new]').first().click(); await page.locator('#new-project-name').fill('隔离画布乙'); await page.locator('#create-project').click();
   await expect(page.locator('.node')).toHaveCount(0); await page.locator('#add-request').click(); await expect(page.locator('.node')).toHaveCount(1);
-  await page.locator('[data-project="spring"]').click(); await expect(page.locator('.node')).toHaveCount(3);
+  await page.locator('[data-project="spring"]').click(); await expect(page.locator('.node')).toHaveCount(2);
 });
 
 test('direct prompt editing action rail and sidebar geometry', async ({page}) => {
   await page.setViewportSize({width:1440,height:960});
   await page.goto(DEMO_URL,{waitUntil:'networkidle'});
-  const request=page.locator('[data-id="request-a"]'), textarea=request.locator('textarea');
-  await page.locator('[data-id="result-a"]').click();
+  const request=page.locator('[data-id="generation-a"]'), textarea=request.locator('textarea');
+  await page.locator('[data-id="generation-a"]').click();
   await expect(request).toHaveClass(/expanded/); await expect(request).toHaveAttribute('aria-selected','false');
   const handle=await textarea.elementHandle(); await textarea.click(); await textarea.pressSequentially('｜一次输入');
   await expect(textarea).toHaveValue('保留产品比例，使用自然侧光与克制的浅灰背景｜一次输入');
   expect(await page.evaluate(()=>document.activeElement?.tagName)).toBe('TEXTAREA'); await expect(request).toHaveAttribute('aria-selected','true');
   await request.locator('[data-model-trigger]').click(); await request.locator('[data-profile="lovart:nano"]').click();
-  await request.locator('[data-field="combo"]').selectOption({label:'3:4 · 2K'});
+  await request.locator('[data-image-trigger]').click(); await request.locator('[data-ratio="3:4"]').click();
   expect(await handle.evaluate((el)=>el.isConnected)).toBeTruthy(); await handle.focus(); await page.keyboard.type('｜继续');
   await expect(textarea).toHaveValue('保留产品比例，使用自然侧光与克制的浅灰背景｜一次输入｜继续');
 
-  const result=page.locator('[data-id="result-a"]'), footer=result.locator('footer'), rail=result.locator('.image-actions');
+  const result=page.locator('[data-id="generation-a"]'), footer=result.locator('footer'), rail=result.locator('.image-actions');
   for(const action of await rail.locator('a,button').all()){await expect(action).toHaveAttribute('aria-label',/.+/);await expect(action).toHaveAttribute('title',/.+/);const box=await action.boundingBox();expect(box.width).toBeGreaterThanOrEqual(28);expect(box.height).toBeGreaterThanOrEqual(28);await expect(action.locator('svg')).toHaveCount(1)}
-  const before=await footer.boundingBox(); await rail.locator('[data-open]').hover(); const hover=await footer.boundingBox(); await rail.locator('[data-delete]').focus(); const focused=await footer.boundingBox(); expect({width:hover.width,height:hover.height}).toEqual({width:before.width,height:before.height});expect({width:focused.width,height:focused.height}).toEqual({width:before.width,height:before.height});
-  const overlap=await page.evaluate(()=>{const m=document.querySelector('[data-id="result-a"] footer>span').getBoundingClientRect(),a=document.querySelector('[data-id="result-a"] .image-actions').getBoundingClientRect();return m.right>a.left+.5});expect(overlap).toBeFalsy();
-  await expect(rail.locator('a[download]')).toHaveAttribute('href',/demo-portrait\.svg$/);
-  await rail.locator('[data-open]').click(); await expect(page.locator('#viewer')).toBeVisible(); await expect(page.locator('#viewer-original')).toHaveAttribute('href',/demo-portrait\.svg$/); await page.keyboard.press('Escape');
+  const before=await footer.boundingBox(); await rail.locator('[data-open-result]').hover(); const hover=await footer.boundingBox(); await rail.locator('[data-delete]').focus(); const focused=await footer.boundingBox(); expect({width:hover.width,height:hover.height}).toEqual({width:before.width,height:before.height});expect({width:focused.width,height:focused.height}).toEqual({width:before.width,height:before.height});
+  const overlap=await page.evaluate(()=>{const m=document.querySelector('[data-id="generation-a"] footer>span').getBoundingClientRect(),a=document.querySelector('[data-id="generation-a"] .image-actions').getBoundingClientRect();return m.right>a.left+.5});expect(overlap).toBeFalsy();
+  await expect(rail.locator('[data-download-result]')).toBeEnabled();
+  await rail.locator('[data-open-result]').click(); await expect(page.locator('#viewer')).toBeVisible(); await expect(page.locator('#viewer-original')).toHaveAttribute('href',/demo-portrait\.svg$/); await page.keyboard.press('Escape');
 
-  const center=async()=>page.evaluate(()=>{const r=document.querySelector('#viewport').getBoundingClientRect(),s=JSON.parse(localStorage.getItem('image-hub-demo-v4')).projects.find(p=>p.id==='spring');return{x:(r.width/2-s.view.x)/s.view.z,y:(r.height/2-s.view.y)/s.view.z,width:r.width,nodes:s.nodes.map(n=>[n.id,n.x,n.y])}});
+  const center=async()=>page.evaluate(()=>{const r=document.querySelector('#viewport').getBoundingClientRect(),s=JSON.parse(localStorage.getItem('image-hub-demo-v5')).projects.find(p=>p.id==='spring');return{x:(r.width/2-s.view.x)/s.view.z,y:(r.height/2-s.view.y)/s.view.z,width:r.width,nodes:s.nodes.map(n=>[n.id,n.x,n.y])}});
   const c1=await center(); await page.locator('#sidebar-collapse').click(); await page.waitForTimeout(50); const c2=await center(); expect(c2.width).toBeGreaterThan(c1.width); expect(Math.abs(c2.x-c1.x)).toBeLessThan(1); expect(Math.abs(c2.y-c1.y)).toBeLessThan(1); expect(c2.nodes).toEqual(c1.nodes); const ds=await endpointDeltas(page);ds.forEach(d=>{expect(d.start).toBeLessThanOrEqual(1.5);expect(d.end).toBeLessThanOrEqual(1.5)});
 });

@@ -42,7 +42,7 @@ def test_new_request_chooses_first_enabled_profile_and_never_falls_back_for_hist
     assert "不可用" in result["unavailable"]["message"]
 
 
-def test_history_locate_deduplicates_and_continue_copies_the_full_request():
+def test_history_locate_finds_the_unified_node_and_continue_copies_the_full_request():
     result = run_canvas_core(
         f"""
         const core = require({json.dumps(str(CORE_PATH))});
@@ -60,28 +60,101 @@ def test_history_locate_deduplicates_and_continue_copies_the_full_request():
         const second = core.historyAction(nodes, item, 'locate', uid);
         const continued = core.historyAction(nodes, item, 'continue', uid);
         console.log(JSON.stringify({{
-          nodeCount:nodes.length,
-          sameResult:first.result.id === second.result.id,
-          locateRequest:first.request,
-          focusId:second.focusId,
-          request:continued.request
+          nodeCount: nodes.length,
+          nodeType: nodes[0].type,
+          sameNode: first.node.id === second.node.id && first.node.id === continued.node.id,
+          locateCreated: first.createdNode,
+          secondCreated: second.createdNode,
+          focusId: second.focusId,
+          resultRef: second.resultRef,
+          generationId: first.result.generationId,
+          sentiment: first.result.sentiment,
+          expanded: nodes[0].expanded,
+          create: continued.create
         }}));
         """
     )
 
     assert result["nodeCount"] == 1
-    assert result["sameResult"] is True
-    assert result["locateRequest"] is None
-    assert result["focusId"] == "result-1"
-    assert result["request"] == {
+    assert result["nodeType"] == "generation_node"
+    assert result["sameNode"] is True
+    assert result["locateCreated"] is True
+    assert result["secondCreated"] is False
+    assert result["focusId"] == result["resultRef"].split(":")[1]
+    assert result["generationId"] == "generation-old"
+    assert result["sentiment"] == "satisfied"
+    assert result["expanded"] is False
+    assert result["create"] == {
+        "x": 644,
+        "y": 150,
         "prompt": "historical prompt",
+        "provider": "api",
         "profileId": "api:opaque",
         "ratio": "3:4",
         "resolution": "4K",
         "quality": "standard",
-        "inputId": "result-1",
+        "count": 1,
+        "orderedInputIds": [result["resultRef"]],
         "parentGenerationId": "generation-old",
+        "expanded": True,
     }
+
+
+def test_migrates_legacy_canvas_once_and_remaps_references():
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        const legacy = [
+          {{id:'upload-1', type:'image', x:42, y:73, width:280}},
+          {{id:'request-1', type:'generation_request', x:500, y:120, width:344,
+            prompt:'legacy draft', profileId:'api:opaque', ratio:'3:4', resolution:'2K',
+            quality:'standard', count:2, expanded:true, orderedInputIds:['upload-1','result-2']}},
+          {{id:'result-1', type:'generation_result', requestId:'request-1', generationId:'evidence-1',
+            artifactUrl:'/generations/evidence-1/artifact', status:'succeeded', sentiment:'adopted',
+            aspect:'3/4', parameters:{{ratio:'3:4', resolution:'2K'}}}},
+          {{id:'result-2', type:'generation_result', requestId:'request-1', generationId:'evidence-2',
+            artifactUrl:'/generations/evidence-2/artifact', status:'succeeded', aspect:'3/4'}},
+          {{id:'result-3', type:'generation_result', generationId:'evidence-3',
+            artifactUrl:'/generations/evidence-3/artifact', status:'succeeded', aspect:'1/1'}}
+        ];
+        const first = core.migrateCanvasNodes(legacy);
+        const second = core.migrateCanvasNodes(first.nodes);
+        const merged = first.nodes.find(node => node.id === 'request-1');
+        const orphan = first.nodes.find(node => node.id === 'generation-result-3');
+        console.log(JSON.stringify({{
+          migrated: first.migrated,
+          secondMigrated: second.migrated,
+          types: first.nodes.map(node => node.type),
+          inputRefs: merged.orderedInputIds,
+          resultIds: merged.activeBatch.results.map(item => item.id),
+          resultGenerationIds: merged.activeBatch.results.map(item => item.generationId),
+          sentiment: merged.activeBatch.results.map(item => item.sentiment),
+          primaryResultId: merged.primaryResultId,
+          expanded: merged.expanded,
+          draftPrompt: merged.prompt,
+          batchRequest: merged.activeBatch.request,
+          orphanType: orphan.type,
+          orphanGenerationId: orphan.activeBatch.results[0].generationId,
+          stableSecondPass: JSON.stringify(second.nodes) === JSON.stringify(first.nodes)
+        }}));
+        """
+    )
+
+    assert result["migrated"] is True
+    assert result["secondMigrated"] is False
+    assert result["stableSecondPass"] is True
+    assert result["types"] == ["image", "generation_node", "generation_node"]
+    assert result["inputRefs"] == ["upload-1", "result:request-1:result-2"]
+    assert result["resultIds"] == ["result-1", "result-2"]
+    assert result["resultGenerationIds"] == ["evidence-1", "evidence-2"]
+    assert result["sentiment"] == ["adopted", ""]
+    assert result["primaryResultId"] == "result-1"
+    assert result["expanded"] is False
+    assert result["draftPrompt"] == "legacy draft"
+    assert result["batchRequest"]["count"] == 2
+    assert result["batchRequest"]["orderedInputIds"] == ["upload-1", "result:request-1:result-2"]
+    assert result["orphanType"] == "generation_node"
+    assert result["orphanGenerationId"] == "evidence-3"
 
 
 def test_restored_local_upload_requires_reselection_without_changing_relationships():
@@ -90,10 +163,15 @@ def test_restored_local_upload_requires_reselection_without_changing_relationshi
         const core = require({json.dumps(str(CORE_PATH))});
         const restored = core.restoreCanvasNodes([
           {{id:'upload-1', type:'image', x:42, y:73, src:'blob:old', localOnly:true}},
-          {{id:'request-1', type:'generation_request', orderedInputIds:['upload-1']}}
+          {{id:'generation-1', type:'generation_node', orderedInputIds:['upload-1']}}
         ]);
         const missing = core.firstMissingLocalInput(restored, restored[1], () => false);
-        console.log(JSON.stringify({{restored, missingId:missing?.id || null}}));
+        const satisfied = core.firstMissingLocalInput(restored, restored[1], id => id === 'upload-1');
+        console.log(JSON.stringify({{
+          restored,
+          missingId: missing?.id || null,
+          satisfied: satisfied
+        }}));
         """
     )
 
@@ -102,11 +180,13 @@ def test_restored_local_upload_requires_reselection_without_changing_relationshi
     assert restored[0]["y"] == 73
     assert restored[0]["src"] == ""
     assert restored[0]["needsReselect"] is True
+    assert restored[1]["type"] == "generation_node"
     assert restored[1]["orderedInputIds"] == ["upload-1"]
     assert result["missingId"] == "upload-1"
+    assert result["satisfied"] is None
 
 
-def test_copy_paste_remaps_internal_relationships_without_backend_evidence():
+def test_copy_paste_carries_the_recipe_without_fabricating_generation_evidence():
     result = run_canvas_core(
         f"""
         const core = require({json.dumps(str(CORE_PATH))});
@@ -114,24 +194,31 @@ def test_copy_paste_remaps_internal_relationships_without_backend_evidence():
         const uid = prefix => `${{prefix}}-new-${{++sequence}}`;
         const nodes = [
           {{id:'image-a', type:'image', x:10, y:20, width:200}},
-          {{id:'request-a', type:'generation_request', x:250, y:20, width:340,
-            orderedInputIds:['image-a','missing'], submitting:true}},
-          {{id:'result-a', type:'generation_result', generationId:'immutable-generation',
-            requestId:'request-a', x:650, y:20, width:240, sentiment:'adopted', canRetry:true}}
+          {{id:'generation-a', type:'generation_node', x:250, y:20, width:344, submitting:true, dirty:true,
+            orderedInputIds:['image-a','missing','result:generation-a:result-a','result:generation-b:result-b'],
+            primaryResultId:'result-a',
+            activeBatch:{{id:'batch-a', request:{{prompt:'kept', profileId:'api:opaque', ratio:'3:4', resolution:'2K', quality:'standard', count:1, orderedInputIds:['image-a']}},
+              results:[{{id:'result-a', generationId:'evidence-a', artifactUrl:'/a', status:'succeeded', sentiment:'adopted', canRetry:true}}]}}}},
+          {{id:'generation-b', type:'generation_node', x:650, y:20, width:344,
+            activeBatch:{{id:'batch-b', request:{{prompt:'other'}},
+              results:[{{id:'result-b', generationId:'evidence-b', artifactUrl:'/b', status:'succeeded'}}]}}}}
         ];
-        const copied = core.clonePresentationNodes(nodes, nodes.map(n => n.id), uid, {{x:36,y:40}});
+        const copied = core.clonePresentationNodes(nodes, ['image-a','generation-a'], uid, {{x:36,y:40}});
         console.log(JSON.stringify(copied));
         """
     )
     clones = {node["type"]: node for node in result["clones"]}
     assert clones["image"]["x"] == 46
-    assert clones["generation_request"]["orderedInputIds"] == [clones["image"]["id"]]
-    assert clones["generation_request"]["submitting"] is False
-    assert clones["generation_result"]["requestId"] == clones["generation_request"]["id"]
-    assert clones["generation_result"]["presentationProxy"] is True
-    assert "generationId" not in clones["generation_result"]
-    assert "sentiment" not in clones["generation_result"]
-    assert "canRetry" not in clones["generation_result"]
+    assert clones["image"]["y"] == 60
+    assert clones["generation_node"]["orderedInputIds"] == [clones["image"]["id"], "missing", "result:generation-b:result-b"]
+    assert clones["generation_node"]["submitting"] is False
+    assert clones["generation_node"]["dirty"] is False
+    assert clones["generation_node"]["activeBatch"] is None
+    assert clones["generation_node"]["attempt"] is None
+    assert clones["generation_node"]["primaryResultId"] == ""
+    assert clones["generation_node"]["expanded"] is True
+    assert clones["generation_node"]["prompt"] == "kept"
+    assert "result-a" not in json.dumps(clones)
 
 
 def test_delete_is_presentation_only_and_prunes_references():
@@ -139,18 +226,20 @@ def test_delete_is_presentation_only_and_prunes_references():
         f"""
         const core = require({json.dumps(str(CORE_PATH))});
         const nodes = [
-          {{id:'image-a', type:'image'}},
-          {{id:'request-a', type:'generation_request', orderedInputIds:['image-a']}},
-          {{id:'result-a', type:'generation_result', generationId:'keep-in-database', requestId:'request-a'}}
+          {{id:'upload-1', type:'image'}},
+          {{id:'generation-1', type:'generation_node',
+            orderedInputIds:['upload-1','result:generation-2:result-b']}},
+          {{id:'generation-2', type:'generation_node',
+            activeBatch:{{id:'batch-b', request:{{prompt:'keep-in-database'}},
+              results:[{{id:'result-b', generationId:'keep-in-database', artifactUrl:'/b', status:'succeeded'}}]}}}}
         ];
-        console.log(JSON.stringify(core.removePresentationNodes(nodes, ['image-a','request-a'])));
+        console.log(JSON.stringify(core.removePresentationNodes(nodes, ['upload-1','generation-2'])));
         """
     )
     assert result == [{
-        "id": "result-a",
-        "type": "generation_result",
-        "generationId": "keep-in-database",
-        "requestId": "",
+        "id": "generation-1",
+        "type": "generation_node",
+        "orderedInputIds": [],
     }]
 
 

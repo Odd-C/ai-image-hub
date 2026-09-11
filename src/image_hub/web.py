@@ -135,6 +135,21 @@ def _generation_dict(generation: Generation) -> dict:
     }
 
 
+def _canvas_generation_targets(node: dict) -> list[dict]:
+    """Canvas entries that may carry a generation id.
+
+    The unified generation node keeps its results inside the active batch and an
+    in-flight attempt, so the profile check has to look one level deeper than the
+    flat ``generationId`` field of the legacy presentation nodes.
+    """
+    targets = [node]
+    for key in ("activeBatch", "attempt"):
+        batch = node.get(key)
+        if isinstance(batch, dict) and isinstance(batch.get("results"), list):
+            targets.extend(result for result in batch["results"] if isinstance(result, dict))
+    return targets
+
+
 def _migrate_canvas_profile_ids(state: dict, session: Session, project: Project) -> dict:
     draft = state.get("draft")
     if isinstance(draft, dict) and draft.get("profile"):
@@ -148,9 +163,11 @@ def _migrate_canvas_profile_ids(state: dict, session: Session, project: Project)
     if not isinstance(nodes, list):
         return state
     generation_ids = {
-        str(node.get("generationId"))
+        str(target.get("generationId"))
         for node in nodes
-        if isinstance(node, dict) and node.get("generationId")
+        if isinstance(node, dict)
+        for target in _canvas_generation_targets(node)
+        if target.get("generationId")
     }
     generations = {
         generation.id: generation
@@ -164,19 +181,20 @@ def _migrate_canvas_profile_ids(state: dict, session: Session, project: Project)
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        generation = generations.get(str(node.get("generationId", "")))
-        raw_profile_id = (
-            f"{generation.provider}:{generation.model_id}"
-            if generation
-            else str(node.get("profileId", ""))
-        )
-        profile = get_profile(raw_profile_id) if raw_profile_id else None
-        if profile:
-            node["profileId"] = profile.id
-            node.pop("profileUnavailable", None)
-        elif raw_profile_id:
-            node["profileId"] = raw_profile_id
-            node["profileUnavailable"] = True
+        for target in _canvas_generation_targets(node):
+            generation = generations.get(str(target.get("generationId", "")))
+            raw_profile_id = (
+                f"{generation.provider}:{generation.model_id}"
+                if generation
+                else str(target.get("profileId", ""))
+            )
+            profile = get_profile(raw_profile_id) if raw_profile_id else None
+            if profile:
+                target["profileId"] = profile.id
+                target.pop("profileUnavailable", None)
+            elif raw_profile_id:
+                target["profileId"] = raw_profile_id
+                target["profileUnavailable"] = True
     return state
 
 
